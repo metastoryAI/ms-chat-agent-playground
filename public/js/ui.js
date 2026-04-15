@@ -11,19 +11,34 @@ function addUserMessage(parts) {
   let html = '';
   parts.forEach(p => {
     if (p.type === 'file') html += `<div class="attach-badge"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7H2V1z" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>${p.name}</div>`;
-    if (p.type === 'text') html += `<div class="bubble">${escHtml(p.text)}</div>`;
+    if (p.type === 'text') html += `<div class="bubble">${escHtml(p.text).replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>')}</div>`;
   });
   el.innerHTML = html;
   document.getElementById('messages').appendChild(el);
   scrollToBottom();
 }
 
+const _contextCardActions = new Set(['analyze_document', 'analyze_input', 'add_input', 'modify_input', 'remove_input', 'enrich_context', 'enrich_discard', 'builder_discard']);
+
 function addAssistantMessage(text, nextActions, action) {
-  if (!_restoring) _messageLog.push({ type: 'assistant', text, nextActions: nextActions || null });
+  if (!_restoring) _messageLog.push({ type: 'assistant', text, nextActions: nextActions || null, action: action || null });
   removeAllNextActions();
   const el = document.createElement('div');
   el.className = 'msg assistant';
-  let html = `<div class="bubble">${renderMarkdown(text)}</div>`;
+  let html = '';
+
+  // Support { text, hint } object or plain string
+  const msgText = typeof text === 'object' && text !== null ? (text.text || '') : (text || '');
+  const msgHint = typeof text === 'object' && text !== null ? (text.hint || '') : '';
+
+  if (action && _contextCardActions.has(action)) {
+    if (msgText) html += `<div class="bubble">${renderMarkdown(msgText)}</div>`;
+    html += buildContextCardHTML();
+    if (msgHint) html += `<div class="chat-hint">${renderMarkdown(msgHint)}</div>`;
+  } else {
+    if (msgText) html += `<div class="bubble">${renderMarkdown(msgText)}</div>`;
+    if (msgHint) html += `<div class="chat-hint">${renderMarkdown(msgHint)}</div>`;
+  }
   if (nextActions) html += renderNextActions(nextActions);
   el.innerHTML = html;
   document.getElementById('messages').appendChild(el);
@@ -38,6 +53,269 @@ function addErrorMessage(msg) {
   document.getElementById('messages').appendChild(el);
   scrollToBottom();
 }
+
+// Normalize a raw date match into { y, m, d }. Returns null on invalid.
+function _normalizeDate(y, m, d) {
+  y = String(y); m = String(m).padStart(2, '0'); d = String(d).padStart(2, '0');
+  if (y.length === 2) y = (parseInt(y, 10) > 50 ? '19' : '20') + y;
+  if (+m < 1 || +m > 12 || +d < 1 || +d > 31) return null;
+  return { y, m, d };
+}
+
+// Find a date in free text. Handles yyyy-mm-dd, yyyy_mm_dd, dd.mm.yyyy, dd/mm/yyyy, mm/dd/yyyy (ambiguous → European).
+function extractDateFromText(text) {
+  if (!text) return null;
+  const s = String(text).slice(0, 4000);
+  let m;
+  if ((m = s.match(/\b(\d{4})[._\-\/](\d{1,2})[._\-\/](\d{1,2})\b/))) return _normalizeDate(m[1], m[2], m[3]);
+  if ((m = s.match(/\b(\d{1,2})[._\-\/](\d{1,2})[._\-\/](\d{4})\b/))) return _normalizeDate(m[3], m[2], m[1]);
+  if ((m = s.match(/\b(\d{1,2})[._\-\/](\d{1,2})[._\-\/](\d{2})\b/))) return _normalizeDate(m[3], m[2], m[1]);
+  return null;
+}
+
+function extractDateFromFilename(name) {
+  return extractDateFromText(name);
+}
+
+// Format { y, m, d } for display based on project language.
+// German / most European → "22.12.2025". US English → "12/22/2025". Default → "2025-12-22".
+function formatDate(d) {
+  if (!d) return '';
+  const lang = (state.project_language || '').toLowerCase();
+  if (['de', 'nl', 'pl', 'cs', 'fi', 'da', 'no', 'sv', 'tr', 'ru', 'uk'].includes(lang)) return `${d.d}.${d.m}.${d.y}`;
+  if (['en', 'en-us'].includes(lang)) return `${d.m}/${d.d}/${d.y}`;
+  if (['fr', 'it', 'es', 'pt', 'ro', 'hu', 'el'].includes(lang)) return `${d.d}/${d.m}/${d.y}`;
+  return `${d.y}-${d.m}-${d.d}`;
+}
+
+// Turn a document into a short group label — generic "Doc N (date)" wording.
+// Upload order is authoritative; the date (from content, else filename) is appended when found.
+function shortenDocLabel(nameOrDoc, index) {
+  if (!nameOrDoc) return '';
+  const isObj = typeof nameOrDoc === 'object' && nameOrDoc !== null;
+  const name = isObj ? String(nameOrDoc.name || '') : String(nameOrDoc);
+  const textDate = isObj ? extractDateFromText(nameOrDoc.text) : null;
+  const date = textDate || extractDateFromFilename(name);
+  const dateSuffix = date ? ` (${formatDate(date)})` : '';
+  const n = Number.isInteger(index) ? index + 1 : null;
+  if (n != null) return `Doc ${n}${dateSuffix}`;
+  return (date ? 'Doc' : (name.replace(/\.[a-z0-9]{2,5}$/i, '') || 'Doc')) + dateSuffix;
+}
+
+// Group points by source. Returns ordered list of { label, items, key }.
+// Multi-source items (source includes comma or "Both") land in a shared group rendered last.
+function groupPointsBySource(points, inputs) {
+  const docs = (inputs || []).filter(i => i.source === 'document');
+
+  // Build doc label map using upload order — "Doc 1 (date)", "Doc 2 (date)", …
+  const docLabelByKey = new Map();
+  const docIndexByKey = new Map();
+  docs.forEach((d, idx) => {
+    const key = String(d.name || '').toLowerCase();
+    docLabelByKey.set(key, shortenDocLabel(d, idx));
+    docIndexByKey.set(key, idx);
+  });
+
+  const singles = new Map(); // key → { label, items }
+  const multi   = { label: 'Both meetings', items: [] };
+  const generated = { label: 'From generated structure', items: [] };
+
+  for (const p of points) {
+    const raw = typeof p === 'object' ? String(p.source || '') : '';
+
+    // Builder-absorbed items (after discard) — own group, clear labelling.
+    if (raw === '__generated__') {
+      generated.items.push(p);
+      continue;
+    }
+
+    const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+
+    if (parts.length === 0) {
+      // Source missing — bucket silently, no "Unknown" label.
+      if (!singles.has('__unsourced__')) singles.set('__unsourced__', { label: 'Other', items: [] });
+      singles.get('__unsourced__').items.push(p);
+      continue;
+    }
+
+    if (parts.length === 1) {
+      const s = parts[0];
+      const isBoth = /^both$/i.test(s);
+      if (isBoth) {
+        multi.items.push(p);
+        continue;
+      }
+      const key = s.toLowerCase();
+      const label = docLabelByKey.get(key) || shortenDocLabel(s);
+      if (!singles.has(key)) singles.set(key, { label, items: [] });
+      singles.get(key).items.push(p);
+    } else {
+      if (parts.length === 2) multi.label = 'Both meetings';
+      else multi.label = 'Multiple meetings';
+      multi.items.push(p);
+    }
+  }
+
+  const ordered = [];
+  // Follow upload order of docs
+  for (const d of docs) {
+    const key = String(d.name || '').toLowerCase();
+    if (singles.has(key)) {
+      ordered.push({ key, ...singles.get(key) });
+      singles.delete(key);
+    }
+  }
+  // Any remaining singles (unsourced / fallback)
+  for (const [key, g] of singles) ordered.push({ key, ...g });
+  if (multi.items.length > 0) ordered.push({ key: '__multi__', ...multi });
+  if (generated.items.length > 0) ordered.push({ key: '__generated__', ...generated });
+  return ordered;
+}
+
+function renderGroupedPoints(points, inputs, rowClass) {
+  if (points.length === 0) return '';
+  const groups = groupPointsBySource(points, inputs);
+
+  // Open only the most recent doc group (last single-doc group, not the
+  // special "__multi__" / "__generated__" / "__unsourced__" buckets).
+  const isDocKey = (k) => k && !k.startsWith('__');
+  let openIdx = -1;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (isDocKey(groups[i].key)) { openIdx = i; break; }
+  }
+  if (openIdx === -1) openIdx = 0; // fallback: if no doc group, open the first
+
+  return groups.map((g, idx) => {
+    const body = renderFlatPoints(g.items, rowClass);
+    return `<details class="cc-source-group" ${idx === openIdx ? 'open' : ''}>
+      <summary class="cc-source-group-head"><span class="cc-source-group-label">${escHtml(g.label)}</span><span class="cc-source-group-count">${g.items.length}</span></summary>
+      <div class="cc-source-group-body">${body}</div>
+    </details>`;
+  }).join('');
+}
+
+// Render a list of { title, summary } objects as rows of a given rowClass.
+function renderFlatPoints(points, rowClass) {
+  const contentClass = rowClass === 'cc-note' ? 'cc-note-content'
+                    : rowClass === 'cc-topic-row' ? 'cc-topic-row-content'
+                    : 'cc-point-content';
+  const titleClass   = rowClass === 'cc-note' ? 'cc-note-title'
+                    : rowClass === 'cc-topic-row' ? 'cc-topic-row-title'
+                    : 'cc-point-title';
+  const summaryClass = rowClass === 'cc-note' ? 'cc-note-summary'
+                    : rowClass === 'cc-topic-row' ? 'cc-topic-row-summary'
+                    : 'cc-point-summary';
+  return points.map(p => {
+    if (typeof p === 'object' && p !== null) {
+      const title = p.title || p.text || '';
+      const tag = (state._topicTags || {})[String(title).toLowerCase()] || '';
+      const tagHtml = tag === 'NEW' ? ' <span class="cc-topic-tag cc-tag-new">NEW</span>'
+                    : tag === 'UPDATED' ? ' <span class="cc-topic-tag cc-tag-updated">UPDATED</span>'
+                    : '';
+      return `<div class="${rowClass}"><div class="${contentClass}"><span class="${titleClass}">${escHtml(title)}${tagHtml}</span><span class="${summaryClass}">${escHtml(p.summary || '')}</span></div></div>`;
+    }
+    return `<div class="${rowClass}">${escHtml(p)}</div>`;
+  }).join('');
+}
+
+function _fmtElapsedMs(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function renderAnalyzingState() {
+  const start = state._openPointsLoadingStart || Date.now();
+  return `<div class="cc-analyzing">
+    <span class="cc-analyzing-text">Analyzing document…</span>
+    <div class="loading-dots"><div class="dot-anim"></div><div class="dot-anim"></div><div class="dot-anim"></div></div>
+    <span class="cc-analyzing-timer" data-start="${start}">${escHtml(_fmtElapsedMs(Date.now() - start))}</span>
+  </div>`;
+}
+
+// Single global ticker: updates every `.cc-analyzing-timer` currently in the DOM.
+if (!window._ccAnalyzingTickerStarted) {
+  window._ccAnalyzingTickerStarted = true;
+  setInterval(() => {
+    document.querySelectorAll('.cc-analyzing-timer[data-start]').forEach(el => {
+      const start = parseInt(el.dataset.start, 10);
+      if (!Number.isFinite(start)) return;
+      el.textContent = _fmtElapsedMs(Date.now() - start);
+    });
+  }, 1000);
+}
+
+function buildContextCardHTML() {
+  const topics = state._capturedTopics || [];
+  const openPoints = state._openPoints || [];
+  const projectNotes = state._projectNotes || [];
+  const loadingCount = state._openPointsLoadingCount || 0;
+  const loading = loadingCount > 0;
+  const docCount = (state.inputs || []).filter(i => i.source === 'document').length;
+  const multiDoc = docCount > 1;
+
+  if (topics.length === 0 && openPoints.length === 0 && projectNotes.length === 0 && !loading) return '';
+
+  let html = '';
+
+  const opCount = openPoints.length;
+  const pnCount = projectNotes.length;
+  const tcCount = topics.length;
+
+  html += '<div class="context-card cc-tabbed-card">';
+  html += `<div class="cc-tabs">`;
+  const tabDots = `<span class="cc-tab-dots"><span></span><span></span><span></span></span>`;
+  const opSuffix = loading ? tabDots : (opCount ? ` (${opCount})` : '');
+  const pnSuffix = loading ? tabDots : (pnCount ? ` (${pnCount})` : '');
+  html += `<button class="cc-tab cc-tab-active" data-tab="covered-topics">Covered Topics${tcCount ? ` (${tcCount})` : ''}</button>`;
+  html += `<button class="cc-tab" data-tab="open-points">Open Points${opSuffix}</button>`;
+  html += `<button class="cc-tab" data-tab="project-notes">Project Notes${pnSuffix}</button>`;
+  html += `</div>`;
+
+  // Covered Topics pane (active by default) — not loaded async, never shows "Analyzing…"
+  html += `<div class="cc-tab-pane cc-tab-pane-active" data-pane="covered-topics">`;
+  if (tcCount > 0) {
+    html += multiDoc
+        ? renderGroupedPoints(topics, state.inputs, 'cc-topic-row')
+        : renderFlatPoints(topics, 'cc-topic-row');
+  }
+  html += `</div>`;
+
+  // Open Points pane — during extraction, show "Analyzing document…" with thinking animation
+  html += `<div class="cc-tab-pane" data-pane="open-points">`;
+  if (loading) {
+    html += renderAnalyzingState(loadingCount);
+  } else if (opCount > 0) {
+    html += multiDoc
+        ? renderGroupedPoints(openPoints, state.inputs, 'cc-point')
+        : renderFlatPoints(openPoints, 'cc-point');
+  }
+  html += `</div>`;
+
+  // Project Notes pane
+  html += `<div class="cc-tab-pane" data-pane="project-notes">`;
+  if (loading) {
+    html += renderAnalyzingState();
+  } else if (pnCount > 0) {
+    html += multiDoc
+        ? renderGroupedPoints(projectNotes, state.inputs, 'cc-note')
+        : renderFlatPoints(projectNotes, 'cc-note');
+  }
+  html += `</div>`;
+  html += '</div>'; // close .cc-tabbed-card
+
+  return html;
+}
+
+// Tab switching — delegated event listener
+document.addEventListener('click', e => {
+  const tab = e.target.closest('.cc-tab');
+  if (!tab) return;
+  const card = tab.closest('.cc-tabbed-card');
+  if (!card) return;
+  const target = tab.dataset.tab;
+  card.querySelectorAll('.cc-tab').forEach(t => t.classList.toggle('cc-tab-active', t.dataset.tab === target));
+  card.querySelectorAll('.cc-tab-pane').forEach(p => p.classList.toggle('cc-tab-pane-active', p.dataset.pane === target));
+});
 
 function addLoading() {
   const el = document.createElement('div');
@@ -68,7 +346,25 @@ function removeLoading(el) {
 }
 
 function renderMarkdown(text) {
-  return text
+  if (!text) return '';
+  // Normalize common unicode escapes to actual characters
+  const normalized = String(text)
+      .replace(/\u{1F4A1}/gu, '💡')
+      .replace(/\u{2705}/gu, '✅')
+      .replace(/\u{26A1}/gu, '⚡')
+      .replace(/\u{1F50D}/gu, '🔍');
+
+  // Use marked.js when available for full markdown support (headings, tables, lists, code, etc.)
+  if (typeof marked !== 'undefined' && marked.parse) {
+    try {
+      return marked.parse(normalized, { gfm: true, breaks: true });
+    } catch (err) {
+      console.warn('[renderMarkdown] marked.parse failed, falling back:', err);
+    }
+  }
+
+  // Fallback: minimal inline rendering (bold, bullets, line breaks)
+  return normalized
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/^- (.+)$/gm, '<li>$1</li>')
       .replace(/(<li>[\s\S]*<\/li>)/g, '<ul>$1</ul>')
@@ -76,44 +372,53 @@ function renderMarkdown(text) {
       .replace(/\n/g, '<br>');
 }
 
-function renderCtaBtn(btn) {
-  const tt = btn.tooltip ? ` data-tip="${escHtml(btn.tooltip)}"` : '';
-  const data = JSON.stringify(btn).replace(/"/g, '&quot;');
-  return `<button class="cta-btn"${tt} onclick="handleButtonClick(this,${data})">
-    <div class="btn-left">
-      <span class="btn-name">${escHtml(btn.name)}</span>
-      ${btn.subtext ? `<span class="btn-sub">${escHtml(btn.subtext)}</span>` : ''}
-    </div>
-  </button>`;
-}
+// Enter key icon SVG
+const _enterSvg = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 2v4.5a1 1 0 01-1 1H3.5M3.5 7.5L5.5 5.5M3.5 7.5l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function renderNextActions(na) {
-  if (!na) return '';
-  let html = `<div class="next-actions">`;
-  if (na.label) html += `<div class="next-label">${na.label}</div>`;
+  const bar = document.getElementById('next-actions-bar');
+  if (!bar) return '';
+  if (!na) { bar.style.display = 'none'; bar.innerHTML = ''; return ''; }
 
-  if (na.buttons && na.buttons.length) {
-    html += `<div class="btn-row">`;
-    na.buttons.forEach(btn => { html += renderCtaBtn(btn); });
-    html += `</div>`;
+  let html = '';
+  let hasAny = false;
+
+  function renderBtn(btn, groupIdx) {
+    const data = JSON.stringify(btn).replace(/"/g, '&quot;');
+    const cmdName = '/' + (btn.name || '').toLowerCase().replace(/\+/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const grp = groupIdx !== undefined ? ` data-group="${groupIdx}"` : '';
+    const cmd = btn.command ? ` data-cmd="${btn.command}"` : '';
+    return `<button class="na-btn"${grp}${cmd} onclick="handleButtonClick(this,${data})">
+      <span class="na-btn-cmd">${escHtml(cmdName)}</span>
+      ${btn.subtext ? `<span class="na-btn-sub">${escHtml(btn.subtext)}</span>` : '<span class="na-btn-sub"></span>'}
+      <span class="na-btn-key">${_enterSvg}</span>
+    </button>`;
   }
 
-  if (na.groups && na.groups.length) {
-    na.groups.forEach(g => {
-      html += `<div class="group-label">${g.label || ''}${g.subtext ? `<span class="group-sub">${escHtml(g.subtext)}</span>` : ''}</div>`;
-      html += `<div class="btn-row">`;
-      (g.buttons || []).forEach(btn => { html += renderCtaBtn(btn); });
-      html += `</div>`;
+  if (na.groups) {
+    na.groups.forEach((g, gi) => {
+      if (g.separator) { html += '<hr class="na-separator">'; return; }
+      if (!g.buttons?.length) return;
+      g.buttons.forEach(btn => { html += renderBtn(btn, gi); hasAny = true; });
     });
   }
+  if (na.buttons) na.buttons.forEach(btn => { html += renderBtn(btn); hasAny = true; });
 
-  html += `</div>`;
-  return html;
+  if (!hasAny) { bar.style.display = 'none'; bar.innerHTML = ''; return ''; }
+
+  html += `<div class="na-footer"><span class="na-footer-esc"><kbd>esc</kbd> to close</span><span class="na-footer-move"><kbd>↑</kbd><kbd>↓</kbd> move</span></div>`;
+  bar.innerHTML = html;
+  bar.style.display = 'flex';
+  _naHidden = false;
+  if (typeof updateNaPlaceholder === 'function') updateNaPlaceholder();
+  return '';
 }
 
 function removeAllNextActions() {
   if (_restoring) return;
-  document.querySelectorAll('.next-actions').forEach(el => el.remove());
+  const bar = document.getElementById('next-actions-bar');
+  if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+  if (typeof updateNaPlaceholder === 'function') updateNaPlaceholder();
 }
 
 function handleButtonClick(el, btn) {
@@ -128,18 +433,29 @@ function handleButtonClick(el, btn) {
 
   if (btn.id === 'switch_to_new_project') {
     const conflict = state._pendingConflict;
+    // Reset all project state for the new project
     state._pendingConflict = null;
+    state.inputs = [];
+    state.project_summary = null;
+    state.project_context = null;
+    state.existing_structure = null;
+    state._capturedTopics = null;
+    state._openPoints = [];
+    state._resolvedPoints = [];
+    state._resolvedAnswers = [];
+    state._mode = 'chat';
+    if (typeof updateContextTag === 'function') updateContextTag();
+
     if (conflict?.source === 'document' && conflict.fileText) {
-      state.free_inputs = [];
-      state.documents = [];
-      recomputeSummary();
-      pendingFileText = conflict.fileText;
-      pendingFile = { name: conflict.fileName };
+      pendingFiles = [{
+        file:  { name: conflict.fileName },
+        text:  conflict.fileText,
+        ready: Promise.resolve(),
+        error: null,
+      }];
+      renderFilePreview();
       sendMessage();
     } else {
-      state.free_inputs = [];
-      state.documents = [];
-      recomputeSummary();
       document.getElementById('user-input').value = _lastUserText || conflict?.summary || '';
       sendMessage();
     }
@@ -156,23 +472,55 @@ function handleButtonClick(el, btn) {
     return;
   }
 
-  const STRUCTURE_GENERATION_TYPE = {
-    trigger_structure_modules:          'modules',
-    trigger_structure_modules_features: 'modules_features',
-    trigger_structure_full:             'full',
+  const BUILDER_GENERATION_TYPE = {
+    trigger_builder_modules:          'modules',
+    trigger_builder_modules_features: 'modules_features',
   };
-  if (btn.command in STRUCTURE_GENERATION_TYPE) {
+  if (btn.command in BUILDER_GENERATION_TYPE) {
     removeAllNextActions();
     addUserMessage([{ type: 'text', text: btn.name }]);
     handleResponse({
       action: 'route_to_agent',
-      agent:  'structure_generator',
-      handoff: { generation_type: STRUCTURE_GENERATION_TYPE[btn.command] },
+      agent:  'agent_builder',
+      handoff: { generation_type: BUILDER_GENERATION_TYPE[btn.command] },
     }, null);
     return;
   }
 
-input.value = COMMAND_TO_TEXT[btn.command] || btn.command || btn.name;
+  if (btn.command === 'trigger_enrich_context') {
+    removeAllNextActions();
+    addUserMessage([{ type: 'text', text: 'Enrich Context' }]);
+    setEnrichContextSource('chat');
+    handleResponse({
+      action: 'route_to_agent',
+      agent:  'agent_interviewer',
+      handoff: {
+        mode:             'enrich_context',
+        status:           'start',
+        answers:          [],
+        platform_type:    state.project_context?.platform_type || null,
+        project_summary:  state.project_summary,
+        project_context:  state.project_context,
+        captured_topics:  state._capturedTopics || [],
+        existing_modules: (state.existing_structure?.sections || []).flatMap(s => s.modules || []),
+        project_language: state.project_language || null,
+      },
+    }, null);
+    return;
+  }
+
+  // Structure card commands
+  if (btn.command === 'builder_insert')  { removeAllNextActions(); handleBuilderAction('insert');              return; }
+  if (btn.command === 'builder_resolve') { removeAllNextActions(); handleBuilderAction('resolve_assumptions'); return; }
+  if (btn.command === 'builder_discard') { removeAllNextActions(); handleBuilderAction('discard');             return; }
+  if (btn.command === 'builder_enrich') {
+    removeAllNextActions();
+    addUserMessage([{ type: 'text', text: 'Enrich Context' }]);
+    handleBuilderAction('enrich_context');
+    return;
+  }
+
+  input.value = COMMAND_TO_TEXT[btn.command] || btn.command || btn.name;
   sendMessage();
 }
 
@@ -257,7 +605,7 @@ function escHtml(s) {
 function showDebugInput(payload, fileName, agentKey) {
   document.getElementById('io-empty').style.display = 'none';
   document.getElementById('io-content').style.display = 'block';
-  let display = { _agent: agentKey || 'chat_agent', ...payload };
+  let display = { _agent: agentKey || 'agent_chat', ...payload };
   if (fileName) display._file_attached = fileName;
   _lastInput = display;
   _lastOutput = null;
@@ -265,10 +613,7 @@ function showDebugInput(payload, fileName, agentKey) {
   document.getElementById('debug-output').innerHTML = '<span style="color:var(--text3)">Waiting for response...</span>';
   document.getElementById('inline-output').innerHTML = '<span style="color:var(--text3);font-size:11px;padding:8px 10px;display:block;">Waiting for response...</span>';
   renderInline('inline-input', display);
-  document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.stab').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-io').classList.add('active');
-  document.querySelectorAll('.stab')[0].classList.add('active');
+  // Don't force-switch tabs — respect whatever tab the user has open (Backend, State, etc.)
 }
 
 function showDebugOutput(data, agentKey) {
@@ -306,9 +651,9 @@ function trackTokens(rawResponse, agentKey) {
   tokenStats.totalOutput += output;
   tokenStats.requests++;
   tokenStats.log.unshift({
-    agent: agentKey || 'chat_agent',
+    agent: agentKey || 'agent_chat',
     provider: provider,
-    model: getModelForAgent(agentKey || 'chat_agent'),
+    model: getModelForAgent(agentKey || 'agent_chat'),
     input,
     output,
     total: input + output,
@@ -320,6 +665,8 @@ function trackTokens(rawResponse, agentKey) {
 
 function updateTokenPanel() {
   const total = tokenStats.totalInput + tokenStats.totalOutput;
+  const lastReq = tokenStats.log[0] || null;
+  const lastInput = lastReq ? lastReq.input : 0;
 
   document.getElementById('tk-total-input').textContent = tokenStats.totalInput.toLocaleString();
   document.getElementById('tk-total-output').textContent = tokenStats.totalOutput.toLocaleString();
@@ -327,7 +674,8 @@ function updateTokenPanel() {
   document.getElementById('tk-requests').textContent = tokenStats.requests;
 
   const limit = getModelContextLimit();
-  const pct = Math.min((total / limit) * 100, 100);
+  // Progress bar shows last request's input tokens vs context window (per-request metric)
+  const pct = lastInput > 0 ? Math.min((lastInput / limit) * 100, 100) : 0;
   const fill = document.getElementById('token-bar-fill');
   fill.style.width = pct + '%';
 
@@ -340,8 +688,11 @@ function updateTokenPanel() {
   fill.style.background = color;
 
   const limitStr = limit >= 1000000 ? (limit / 1000000).toFixed(1) + 'M' : (limit / 1000).toFixed(0) + 'K';
+  const barLabel = lastInput > 0
+      ? `Last request: ${lastInput.toLocaleString()} input tokens · <span style="color:${color};font-weight:600;">${label}</span>`
+      : `${total.toLocaleString()} tokens total`;
   document.getElementById('token-bar-legend').innerHTML =
-      `<span>${total.toLocaleString()} tokens · <span style="color:${color};font-weight:600;">${label}</span></span><span>${limitStr}</span>`;
+      `<span>${barLabel}</span><span>${limitStr}</span>`;
 
   const logEl = document.getElementById('token-log');
   if (tokenStats.log.length === 0) {
@@ -360,8 +711,12 @@ function updateTokenPanel() {
 
 // ─── PERSISTENCE ─────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'ms_chat_session';
-const STORAGE_VERSION = 3;
+const STORAGE_KEY_PREFIX = 'ms_chat_session_';
+const STORAGE_VERSION = 6;
+
+function getStorageKey() {
+  return STORAGE_KEY_PREFIX + provider;
+}
 
 function persistChat() {
   try {
@@ -369,38 +724,61 @@ function persistChat() {
     const session = {
       v: STORAGE_VERSION,
       state: {
-        documents:          state.documents,
-        manual_inputs:      state.manual_inputs,
+        inputs:             state.inputs,
         project_summary:    state.project_summary,
         project_context:    state.project_context,
         existing_structure: state.existing_structure,
         _capturedTopics:    state._capturedTopics,
+        _openPoints:        state._openPoints,
+        _projectNotes:      state._projectNotes,
+        _resolvedPoints:    state._resolvedPoints,
+        _mode:              state._mode,
       },
       docCounter,
-      manualCounter,
       messageLog: _messageLog,
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+    localStorage.setItem(getStorageKey(), JSON.stringify(session));
   } catch(e) { /* storage full or unavailable */ }
 }
 
 function restoreChat() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    // Migrate old single-key storage to per-provider
+    const oldRaw = localStorage.getItem('ms_chat_session');
+    if (oldRaw) {
+      localStorage.setItem(getStorageKey(), oldRaw);
+      localStorage.removeItem('ms_chat_session');
+    }
+
+    const raw = localStorage.getItem(getStorageKey());
     if (!raw) return;
     const session = JSON.parse(raw);
 
-    if (session.v !== STORAGE_VERSION) {
-      localStorage.removeItem(STORAGE_KEY);
+    if (session.v !== STORAGE_VERSION && session.v !== 5) {
+      localStorage.removeItem(getStorageKey());
       return;
     }
 
     if (session.state) {
+      // Migrate v5 (3 arrays) → v6 (unified inputs[])
+      if (session.v === 5) {
+        const inputs = [];
+        (session.state.documents || []).forEach(d => {
+          if (d.original_summary) { d.summary = d.original_summary; delete d.original_summary; }
+          if (d.uploaded_at) { d.added_at = d.uploaded_at; delete d.uploaded_at; }
+          inputs.push({ ...d, source: 'document' });
+        });
+        (session.state.free_inputs || []).forEach(f => inputs.push({ ...f, source: 'text' }));
+        (session.state.manual_inputs || []).forEach(m => inputs.push({ ...m, source: 'additional' }));
+        session.state.inputs = inputs;
+        delete session.state.documents;
+        delete session.state.free_inputs;
+        delete session.state.manual_inputs;
+      }
       Object.assign(state, session.state);
       Object.assign(providerStates[provider], session.state);
     }
     if (session.docCounter)    docCounter    = session.docCounter;
-    if (session.manualCounter) manualCounter = session.manualCounter;
 
     const log = session.messageLog;
     if (log && log.length > 0) {
@@ -409,45 +787,81 @@ function restoreChat() {
       if (emptyEl) emptyEl.remove();
 
       _restoring = true;
-      log.forEach((msg, i) => {
-        const isLast = i === log.length - 1;
-        if (msg.type === 'user') {
-          addUserMessage(msg.parts);
-        } else if (msg.type === 'assistant') {
-          // Only restore nextActions for the last message
-          addAssistantMessage(msg.text, isLast ? msg.nextActions : null);
-        } else if (msg.type === 'error') {
-          addErrorMessage(msg.message);
-        } else if (msg.type === 'structure') {
-          renderStructureCard(msg.data);
-        }
-      });
-      _restoring = false;
+      try {
+        log.forEach((msg, i) => {
+          const isLast = i === log.length - 1;
+          if (msg.type === 'user') {
+            addUserMessage(msg.parts);
+          } else if (msg.type === 'assistant') {
+            addAssistantMessage(msg.text, isLast ? msg.nextActions : null, msg.action);
+          } else if (msg.type === 'error') {
+            addErrorMessage(msg.message);
+          } else if (msg.type === 'builder') {
+            renderBuilderCard(msg.data);
+          }
+        });
+      } finally {
+        _restoring = false;
+      }
       _messageLog = log;
+
+      // If last message was a builder card, show builder NA commands
+      const lastMsg = log[log.length - 1];
+      if (lastMsg?.type === 'builder') {
+        const allMods = [
+          ...((lastMsg.data.structure || lastMsg.data).sections || []).flatMap(s => s.modules || []),
+          ...((lastMsg.data.structure || lastMsg.data).modules || []),
+          ...((lastMsg.data.structure || lastMsg.data).pages || []),
+        ];
+        const assumptionCount = [...new Set(allMods.flatMap(m => [
+          ...(m.assumptions || []),
+          ...(m.features || []).flatMap(f => f.assumptions || []),
+        ]).filter(Boolean))].length;
+        const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${assumptionCount}]`);
+        renderNextActions(na);
+      }
+
+      // Restore context tag + input placeholder
+      if (typeof updateContextTag === 'function') updateContextTag();
+
       scrollToBottom();
     }
-  } catch(e) { localStorage.removeItem(STORAGE_KEY); }
+  } catch(e) { console.error('[restoreChat] failed:', e); }
 }
 
 function updateStatePanel() {
-  document.getElementById('st-provider').textContent = (providerLabels[provider] || provider) + ' · ' + getSelectedModel();
+  document.getElementById('st-provider').textContent = (PROVIDER_LABELS[provider] || provider) + ' · ' + getSelectedModel();
 
+  const docs = getDocuments();
   const docsEl = document.getElementById('st-docs');
-  if (state.documents.length === 0) {
-    docsEl.innerHTML = '<div class="state-empty">No documents yet</div>';
+  if (docs.length === 0) {
+    docsEl.innerHTML = '<div class="state-empty">—</div>';
   } else {
-    docsEl.innerHTML = state.documents.map(d => `
+    docsEl.innerHTML = docs.map(d => `
       <div class="doc-item">
         <div class="doc-name">${d.id} — ${d.name}</div>
-        <div class="doc-summary">${(d.original_summary || '').substring(0, 100)}...</div>
+        <div class="doc-summary">${(d.summary || '').substring(0, 100)}...</div>
       </div>`).join('');
   }
 
-  const miEl = document.getElementById('st-manual');
-  if (state.manual_inputs.length === 0) {
-    miEl.innerHTML = '<div class="state-empty">No manual inputs yet</div>';
+  const texts = getFreeInputs();
+  const textEl = document.getElementById('st-text');
+  if (texts.length === 0) {
+    textEl.innerHTML = '<div class="state-empty">—</div>';
   } else {
-    miEl.innerHTML = state.manual_inputs.map(m => `
+    textEl.innerHTML = texts.map(t => `
+      <div class="doc-item">
+        <div class="doc-name">${t.id}</div>
+        <div class="doc-summary">${(t.summary || '').substring(0, 100)}...</div>
+      </div>`).join('');
+  }
+
+  const additionals = getAdditionalInputs();
+  const addEl = document.getElementById('st-additional');
+  if (additionals.length === 0) {
+    addEl.innerHTML = '<div class="state-empty">—</div>';
+  } else {
+    addEl.innerHTML = additionals.map(m => `
       <div class="doc-item">
         <div class="doc-name">${m.topic}</div>
         <div class="doc-summary">${m.detail}</div>
@@ -475,7 +889,7 @@ function updateStatePanel() {
 function clearChat() {
   providerStates[provider] = freshState();
   state = providerStates[provider];
-  docCounter = 0; manualCounter = 0;
+  docCounter = 0;
   _messageLog = [];
   document.getElementById('messages').innerHTML = `<div class="empty-state" id="empty-state">
     <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5"/><path d="M13 20h14M20 13v14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -488,7 +902,7 @@ function clearChat() {
   tokenStats.totalOutput = 0;
   tokenStats.requests = 0;
   tokenStats.log = [];
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(getStorageKey());
   updateTokenPanel();
   updateStatePanel();
 }
@@ -496,8 +910,4 @@ function clearChat() {
 function scrollToBottom() {
   const m = document.getElementById('messages-scroll');
   m.scrollTop = m.scrollHeight;
-}
-
-function escHtml(t) {
-  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }

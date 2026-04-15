@@ -6,418 +6,66 @@
   <title>metastory AI — Playground</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js"></script>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0;}
-    :root{
-      --bg:#f9f9f9;--bg2:#ffffff;--bg3:#f0f2f5;--bg4:#e8eaed;
-      --border:#e2e5ea;--border2:#d0d4db;
-      --text:#1a1d23;--text2:#5a6378;--text3:#9ba3b5;
-      --accent:#3b6ef0;--green:#0f9b6a;--amber:#c47c0a;
-      --purple:#6c4fd4;--red:#d93025;--teal:#0a7fa3;
-      --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      --mono:'JetBrains Mono','Fira Code',monospace;
-      --palette-purple-color-light:#8777D9;--palette-purple-color-dark:#5243AA;
-      --palette-blue-color-light:#2684FF;--palette-blue-color-dark:#0052CC;
-      --palette-green-color-light:#7CD5A7;--palette-green-color-dark:#00875A;
-      --palette-teal-color-light:#00C7E6;--palette-teal-color-dark:#00A3BF;
-      --palette-yellow-color-light:#FFC400;--palette-yellow-color-dark:#FF991F;
-      --palette-red-color-light:#FF7452;--palette-red-color-dark:#DE350B;
-      --palette-grey-color-light:#6B778C;--palette-grey-color-dark:#253858;
-    }
-    html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;overflow:hidden;line-height:1.5;}
-    *{font-size:inherit;}
-
-    /* Layout */
-    .app{display:flex;height:100vh;}
-    .chat-panel{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--border);position:relative;overflow:hidden;}
-    .sidebar{width:420px;min-width:280px;max-width:70vw;display:flex;flex-direction:column;background:var(--bg2);position:relative;}
-    .sidebar-resize{position:absolute;top:0;left:0;width:4px;height:100%;cursor:col-resize;z-index:20;}
-    .sidebar-resize:hover,.sidebar-resize.active{background:var(--accent);}
-
-    /* Header */
-    .header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
-    .logo{font-size:13px;font-weight:500;color:var(--text);}
-    .logo-m{font-weight:700;color:var(--text);}
-    .logo-env{font-weight:400;color:var(--text3);font-size:12px;}
-    .spacer{flex:1;}
-    .prompts-btn-primary{display:flex;align-items:center;gap:5px;padding:6px 14px;font-size:12px;font-weight:500;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;transition:all 0.15s;}
-    .prompts-btn-primary:hover{background:#2d5ed4;}
-
-    /* Toolbar */
-    .toolbar{display:flex;align-items:center;gap:8px;padding:6px 16px;border-bottom:1px solid var(--border);background:var(--bg2);flex-shrink:0;}
-    .provider-tabs{display:flex;}
-    .ptab{padding:5px 12px;font-size:12px;font-weight:500;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text3);cursor:pointer;transition:all 0.15s;}
-    .ptab:hover{color:var(--text);}
-    .ptab.active{color:var(--accent);border-bottom-color:var(--accent);}
-    .toolbar-sep{width:1px;height:20px;background:var(--border);flex-shrink:0;}
-    .toolbar-btn{display:flex;align-items:center;gap:4px;padding:4px 8px;font-size:11px;border-radius:5px;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;transition:all 0.15s;white-space:nowrap;}
-    .toolbar-btn:hover{color:var(--text);background:var(--bg3);}
-
-    /* API Key & Model */
-    .api-key-label{font-size:11px;font-weight:600;color:var(--text2);white-space:nowrap;flex-shrink:0;}
-    .api-key-input{width:180px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:4px 8px;color:var(--text);font-size:11px;font-family:var(--mono);outline:none;}
-    .api-key-input:focus{border-color:var(--accent);}
-    .api-key-input::placeholder{color:var(--text3);}
-    .model-label{padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);color:var(--text2);flex-shrink:0;white-space:nowrap;font-family:var(--mono);}
-    .status-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0;}
-    .status-dot.ok{background:var(--green);}
-    .status-dot.err{background:var(--red);}
-
-    /* Messages */
-    .messages-scroll{flex:1;overflow-y:auto;width:100%;}
-    .messages{padding:20px 16px 150px;display:flex;flex-direction:column;gap:32px;max-width:600px;margin:0 auto;width:100%;}
-    .msg{display:flex;flex-direction:column;gap:6px;}
-    .msg.user{align-items:flex-end;}
-    .msg.assistant{align-items:flex-start;}
-    .bubble{max-width:80%;padding:10px 14px;border-radius:12px;font-size:16px;line-height:1.6;}
-    .msg.user .bubble{background:var(--accent);color:#fff;border-radius:12px 12px 2px 12px;}
-    .msg.assistant .bubble{background:transparent;border:none;border-radius:0;padding:4px 0;}
-    .bubble strong{font-weight:600;}
-    .bubble ul{margin:6px 0 0 16px;line-height:1.35;}
-    .bubble li{margin-bottom:1px;}
-    .msg-meta{font-size:11px;color:var(--text3);}
-
-    /* Attachment badge */
-    .attach-badge{display:inline-flex;align-items:center;gap:5px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--text2);margin-bottom:4px;}
-
-    /* Next actions */
-    .next-actions{margin-top:10px;width:100%;background:white;padding:16px;border-radius:14px;box-shadow:0 1px 2px rgba(43,59,93,.29),0 0 0 1px #EEEEEE;}
-    .next-label{font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px;}
-    .btn-row{display:flex;flex-direction:column;gap:16px;margin-bottom:6px;width:100%;}
-    .cta-btn{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);cursor:pointer;transition:all 0.15s;text-align:left;flex:1 1 auto;}
-    .btn-left{display:flex;flex-direction:column;gap:2px;}
-    .cta-btn:hover{border-color:var(--accent);background:rgba(91,141,246,0.08);}
-    .cta-btn{position:relative;}
-    .cta-btn[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--gray-800,#1f2937);color:#fff;font-size:11px;font-weight:400;padding:5px 10px;border-radius:6px;white-space:nowrap;z-index:10;pointer-events:none;animation:tipIn 0.15s ease;}
-    .cta-btn[data-tip]:hover::before{content:'';position:absolute;top:calc(100% + 2px);left:50%;transform:translateX(-50%);border:4px solid transparent;border-bottom-color:var(--gray-800,#1f2937);z-index:10;pointer-events:none;animation:tipIn 0.15s ease;}
-    @keyframes tipIn{from{opacity:0;transform:translateX(-50%) translateY(-4px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
-    .cta-btn .btn-name{font-size:12px;font-weight:500;color:var(--text);}
-    .cta-btn .btn-sub{font-size:11px;color:var(--text2);}
-    .cta-btn .btn-tier{font-size:10px;font-weight:600;color:var(--amber);flex-shrink:0;}
-    .group-label{font-size:13px;font-weight:500;color:var(--text2);margin:16px 0 16px;padding-left:2px;display:flex;align-items:baseline;gap:5px;}
-    .group-sub{font-size:13px;font-weight:400;color:var(--text2);opacity:0.7;}
-
-    /* Input area */
-    .input-area{position:absolute;bottom:0;left:0;right:0;padding:12px 16px 20px;background:linear-gradient(transparent, var(--bg) 20%);display:flex;flex-direction:column;align-items:center;pointer-events:none;}
-    .input-area>*{pointer-events:auto;}
-    .input-box{width:100%;max-width:600px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:10px 14px;display:flex;flex-direction:column;gap:8px;transition:border-color 0.15s;}
-    .input-box:focus-within{border-color:var(--accent);}
-    .input-row{display:flex;gap:8px;align-items:flex-end;}
-    .file-btn{width:32px;height:32px;border-radius:8px;border:none;background:transparent;color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s;}
-    .file-btn:hover{color:var(--text);}
-    .input-wrap{flex:1;position:relative;}
-    textarea{width:100%;background:transparent;border:none;padding:0;color:var(--text);font-size:13px;font-family:var(--sans);resize:none;outline:none;line-height:1.5;max-height:120px;}
-    textarea::placeholder{color:var(--text3);}
-    .send-btn{width:32px;height:32px;border-radius:8px;border:none;background:var(--text);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s;}
-    .send-btn:hover{background:var(--accent);}
-    .send-btn:disabled{opacity:0.3;cursor:not-allowed;}
-    .stop-btn{width:32px;height:32px;border-radius:8px;border:none;background:var(--red);color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s;}
-    .stop-btn:hover{background:#b91c1c;}
-    .file-preview{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;font-size:11px;color:var(--text2);margin-bottom:8px;}
-    .file-preview button{background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;}
-    /* Context Builder Widget */
-    .cb-widget-container{width:100%;max-width:600px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
-    .cb-question{display:flex;flex-direction:column;gap:8px;}
-    .cb-question-header{display:flex;align-items:baseline;justify-content:space-between;gap:8px;}
-    .cb-question-text{font-size:13px;font-weight:500;color:var(--text);line-height:1.45;}
-    .cb-breadcrumb{font-size:11px;color:var(--text3);white-space:nowrap;flex-shrink:0;}
-    .cb-options{display:flex;flex-direction:column;gap:4px;max-height:calc(6 * 46px);overflow-y:auto;padding-right:2px;}
-    .cb-options::-webkit-scrollbar{width:4px;}.cb-options::-webkit-scrollbar-track{background:transparent;}.cb-options::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-    .cb-option{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;font-size:13px;color:var(--text2);transition:background 0.1s;user-select:none;}
-    .cb-option:hover{background:var(--bg3);}
-    .cb-option input{accent-color:var(--accent);width:14px;height:14px;flex-shrink:0;cursor:pointer;margin-top:2px;align-self:flex-start;}
-    .cb-section-label{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;padding:8px 8px 4px;margin-top:2px;}
-    .cb-section-label:first-child{padding-top:2px;margin-top:0;}
-    .cb-opt-body{flex:1;display:flex;flex-direction:column;gap:1px;}
-    .cb-opt-label{font-size:13px;color:var(--text);}
-    .cb-opt-sub{font-size:11px;color:var(--text3);line-height:1.3;}
-    .cb-opt-tier{font-size:10px;font-weight:700;color:var(--accent);background:rgba(59,110,240,0.1);border:1px solid rgba(59,110,240,0.25);border-radius:4px;padding:1px 5px;white-space:nowrap;align-self:center;flex-shrink:0;}
-    .cb-option-locked{opacity:0.4;cursor:not-allowed;}
-    .cb-option-locked input{cursor:not-allowed;}
-    .cb-pro-note{font-size:11px;color:var(--text3);padding:6px 8px 2px;}
-    .cb-something-else-input{width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:7px 10px;font-size:13px;color:var(--text);font-family:var(--sans);resize:none;outline:none;}
-    .cb-something-else-input:focus{border-color:var(--accent);}
-    .cb-submit-btn{display:inline-flex;align-self:flex-start;padding:7px 16px;font-size:13px;background:var(--accent);color:#fff;border:none;border-radius:7px;cursor:pointer;transition:background 0.15s;}
-    .cb-submit-btn:hover{background:#2d5ed4;}
-    .cb-phase3{display:flex;flex-direction:column;gap:6px;}
-    .cb-phase3-header{font-size:13px;font-weight:500;color:var(--text);padding:2px 0 6px;}
-    .cb-phase3-btn{display:flex;flex-direction:column;align-items:flex-start;padding:9px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;cursor:pointer;text-align:left;transition:all 0.15s;}
-    .cb-phase3-btn:hover{border-color:var(--accent);background:rgba(59,110,240,0.06);}
-    .cb-cancel-btn{opacity:0.55;}
-    .cb-cancel-btn:hover{border-color:var(--red) !important;background:rgba(239,68,68,0.06) !important;opacity:1;}
-    .cb-btn-disabled{opacity:0.45;cursor:not-allowed !important;}
-    .cb-btn-disabled:hover{border-color:var(--border) !important;background:var(--bg3) !important;}
-    .cb-opt-label{font-size:13px;font-weight:500;color:var(--text);}
-    .cb-opt-sub{font-size:11px;color:var(--text3);margin-top:2px;}
-    /* ─── Structure Card ──────────────────────────────────────────────────────── */
-    .structure-card{width:100%;max-width:600px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-top:4px;}
-    .structure-card-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 10px;}
-    .structure-card-title{font-size:13px;font-weight:600;color:var(--text);}
-    .structure-card-meta{font-size:11px;color:var(--text3);}
-    .structure-row{padding:10px 16px;display:flex;flex-direction:column;gap:4px;}
-    .structure-page{}
-    .structure-module{background:var(--bg2);}
-    .structure-row-left{display:flex;align-items:center;gap:8px;flex:1;}
-    .structure-row-header{display:flex;align-items:center;justify-content:space-between;}
-    .structure-row-name{font-size:13px;font-weight:500;color:var(--text);}
-    .palette-swatch{width:16px;height:16px;border-radius:4px;flex-shrink:0;}
-    .structure-row-summary{font-size:12px;color:var(--text2);line-height:1.5;display:flex;flex-direction:column;gap:10px;padding-top:6px;}
-    .structure-detail-summary{font-size:12px;color:var(--text2);line-height:1.5;}
-    .structure-detail-section{display:flex;flex-direction:column;gap:4px;}
-    .structure-detail-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;}
-    .structure-detail-list{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:2px;}
-    .structure-detail-list li{font-size:11px;color:var(--amber);line-height:1.45;}
-    .structure-source-list{display:flex;flex-direction:column;gap:4px;}
-    .structure-source-item{display:flex;flex-direction:column;gap:2px;}
-    .structure-source-type{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;}
-    .structure-source-excerpt{font-size:11px;color:var(--text2);line-height:1.45;font-style:italic;border-left:2px solid var(--border);padding-left:8px;margin-left:2px;}
-    .assumption-tag{font-size:10px;font-weight:600;color:var(--amber);background:rgba(196,124,10,0.1);border:1px solid rgba(196,124,10,0.25);border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;}
-    .structure-assumptions{padding:12px 16px;background:var(--bg3);border-top:1px solid var(--border);}
-    .structure-confidence-badge{font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px;}
-    .assumption-list{margin:0;padding:0 0 0 16px;display:flex;flex-direction:column;gap:4px;}
-    .assumption-list li{font-size:12px;color:var(--text2);line-height:1.5;}
-    .structure-actions{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--bg2);}
-    .structure-action-btn{flex:1;padding:7px 12px;font-size:12px;font-weight:500;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;transition:all 0.15s;}
-    .structure-action-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(59,110,240,0.06);}
-    .structure-action-primary{background:var(--accent);color:#fff;border-color:var(--accent);}
-    .structure-action-primary:hover{background:#2d5ed4;color:#fff;border-color:#2d5ed4;}
-    /* ─── Resolve Card ────────────────────────────────────────────────────────── */
-    .resolve-card{border-top:1px solid var(--border);}
-    .resolve-card-inner{padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
-    .resolve-card-header{font-size:12px;font-weight:600;color:var(--text);padding-bottom:4px;}
-    .resolve-question{display:flex;flex-direction:column;gap:6px;}
-    .resolve-question-label{display:flex;flex-direction:column;gap:2px;}
-    .resolve-module-name{font-size:11px;font-weight:600;color:var(--accent);}
-    .resolve-assumption-text{font-size:12px;color:var(--text2);line-height:1.4;}
-    .resolve-answer-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:7px 10px;font-size:12px;color:var(--text);font-family:var(--sans);resize:none;outline:none;}
-    .resolve-answer-input:focus{border-color:var(--accent);}
-    .resolve-card-actions{padding-top:4px;}
-    .resolve-submit-btn{padding:8px 18px;font-size:13px;font-weight:500;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;transition:background 0.15s;}
-    .resolve-submit-btn:hover{background:#2d5ed4;}
-    /* ─── Structure Section Labels ────────────────────────────────────────────── */
-    .structure-block-header{font-size:11px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:0.06em;padding:10px 16px 6px;background:var(--bg2);border-top:1px solid var(--border);}
-    .structure-block-header:first-child{border-top:none;}
-    .structure-section-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;padding:7px 16px 3px;background:var(--bg2);}
-    .structure-section-header{font-size:12px;font-weight:600;color:var(--text);padding:10px 16px 4px;background:var(--bg3);border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-top:4px;}
-    .structure-row{cursor:pointer;user-select:none;}
-    .structure-row-chevron{font-size:10px;color:var(--text3);transition:transform 0.18s;display:inline-block;margin-right:2px;flex-shrink:0;}
-    .structure-row.open .structure-row-chevron{transform:rotate(90deg);}
-    .structure-row-summary{display:none;}
-    .structure-row.open .structure-row-summary{display:flex;}
-    .structure-action-disabled{opacity:0.4;cursor:not-allowed !important;}
-    .structure-action-disabled:hover{border-color:var(--border) !important;color:var(--text2) !important;background:var(--bg3) !important;}
-    /* ─── Resolve Choice Widgets ──────────────────────────────────────────────── */
-    .resolve-card-sub{font-size:11px;color:var(--text3);margin-bottom:4px;}
-    .resolve-question-meta{margin-bottom:2px;}
-    .resolve-question-text{font-size:13px;font-weight:500;color:var(--text);line-height:1.4;margin-bottom:8px;}
-    .resolve-options{display:flex;flex-direction:column;gap:4px;}
-    .resolve-option{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;font-size:13px;color:var(--text2);transition:background 0.1s;user-select:none;}
-    .resolve-option:hover{background:var(--bg3);}
-    .resolve-option input{accent-color:var(--accent);width:14px;height:14px;flex-shrink:0;cursor:pointer;}
-    .resolve-option-label{font-size:13px;color:var(--text2);}
-    /* ─── Enrich Actions ──────────────────────────────────────────────────────── */
-    .cb-enrich-actions{display:flex;gap:8px;margin-top:12px;}
-    .cb-skip-btn{flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);font-size:13px;cursor:pointer;transition:background 0.15s;}
-    .cb-skip-btn:hover{background:var(--bg2);}
-    .cb-continue-btn{flex:1;padding:9px 12px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity 0.15s;}
-    .cb-continue-btn:disabled{opacity:0.35;cursor:not-allowed;}
-    .cb-continue-btn:not(:disabled):hover{opacity:0.88;}
-    .cb-loading{padding:16px;font-size:13px;color:var(--text3);text-align:center;}
-
-    .cb-context-block{margin:6px 0;padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;}
-    .cb-context-label{font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;}
-    .cb-context-summary{font-size:12.5px;color:var(--text2);line-height:1.5;}
-
-    /* Sidebar */
-    .sidebar-header{padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2);letter-spacing:0.05em;display:flex;align-items:center;gap:8px;}
-    .sidebar-tabs{display:flex;border-bottom:1px solid var(--border);}
-    .stab{flex:1;padding:8px;font-size:12px;text-align:center;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;}
-    .stab:hover{color:var(--text2);}
-    .stab.active{color:var(--accent);border-bottom-color:var(--accent);}
-    .sidebar-content{flex:1;overflow-y:auto;padding:12px;}
-    .sidebar-panel{display:none;}
-    .sidebar-panel.active{display:block;}
-
-    /* JSON viewer */
-    .json-block{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:var(--mono);font-size:11px;line-height:1.7;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:var(--text2);}
-    .k{color:#0a7fa3;}.s{color:#0f9b6a;}.n{color:#c47c0a;}.b{color:#6c4fd4;}
-    .json-section{margin-bottom:12px;}
-    .json-title{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;display:flex;align-items:center;gap:6px;}
-    .json-title .dot{width:6px;height:6px;border-radius:50%;}
-    /* IO view toggle */
-    .io-toggle{display:flex;gap:2px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:2px;margin-bottom:10px;width:fit-content;}
-    .io-tbtn{padding:3px 10px;font-size:11px;border:none;border-radius:4px;background:transparent;color:var(--text3);cursor:pointer;transition:all 0.15s;}
-    .io-tbtn.active{background:var(--bg2);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,0.1);}
-    /* Inline view */
-    .inline-block{border:1px solid var(--border);border-radius:8px;overflow:hidden;}
-    .inline-row{display:flex;flex-direction:column;border-bottom:1px solid var(--border);}
-    .inline-row:last-child{border-bottom:none;}
-    .inline-row-head{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;cursor:pointer;user-select:none;transition:background 0.1s;}
-    .inline-row-head:hover{background:var(--bg3);}
-    .inline-key{font-size:11px;font-weight:600;color:var(--text2);font-family:var(--mono);}
-    .inline-meta{display:flex;align-items:center;gap:6px;}
-    .inline-null{font-size:10px;color:var(--text3);font-family:var(--mono);}
-    .inline-badge{font-size:10px;background:var(--bg3);border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:1px 6px;font-family:var(--mono);}
-    .inline-chevron{font-size:10px;color:var(--text3);transition:transform 0.15s;flex-shrink:0;}
-    .inline-chevron.open{transform:rotate(90deg);}
-    .inline-body{display:none;padding:8px 10px;background:var(--bg3);border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text2);white-space:pre-wrap;word-break:break-all;}
-    .inline-body.open{display:block;}
-
-    /* State panel */
-    .state-item{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
-    .state-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
-    .state-value{font-size:12px;color:var(--text2);font-family:var(--mono);word-break:break-all;}
-    .state-empty{color:var(--text3);font-style:italic;}
-    .doc-item{background:var(--bg4);border-radius:6px;padding:8px;margin-bottom:6px;}
-
-    /* Token panel */
-    .token-bar-section{margin-bottom:16px;}
-    .token-bar-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
-    .token-bar-track{height:12px;background:var(--bg4);border-radius:6px;overflow:hidden;border:1px solid var(--border);}
-    .token-bar-fill{height:100%;border-radius:6px;transition:width 0.4s ease, background 0.4s ease;width:0%;}
-    .token-bar-legend{font-size:11px;color:var(--text2);margin-top:4px;display:flex;justify-content:space-between;}
-    .token-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
-    .token-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
-    .token-card-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;}
-    .token-card-value{font-size:18px;font-weight:600;color:var(--text);font-family:var(--mono);}
-    .token-log-item{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:11px;font-family:var(--mono);color:var(--text2);}
-    .token-log-item .tl-agent{font-weight:600;color:var(--text);}
-    .token-log-item .tl-tokens{color:var(--accent);}
-    .doc-name{font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;}
-    .doc-summary{font-size:11px;color:var(--text2);line-height:1.5;}
-
-    /* Loading */
-    .loading{display:flex;align-items:center;gap:8px;padding:10px 14px;}
-    .loading-text{font-size:13px;color:var(--text3);font-weight:400;}
-    .loading-timer{font-size:12px;color:var(--text3);opacity:0.6;font-variant-numeric:tabular-nums;min-width:32px;}
-    .loading-dots{display:flex;align-items:center;gap:3px;}
-    .dot-anim{width:4px;height:4px;border-radius:50%;background:var(--text3);animation:dotFade 1.4s ease-in-out infinite;opacity:0.2;}
-    .dot-anim:nth-child(2){animation-delay:0.2s;}
-    .dot-anim:nth-child(3){animation-delay:0.4s;}
-    @keyframes dotFade{0%,60%,100%{opacity:0.2}30%{opacity:1}}
-
-    .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;color:var(--text3);}
-    .empty-state svg{opacity:0.3;}
-    .empty-title{font-size:14px;font-weight:500;color:var(--text2);}
-    .empty-sub{font-size:12px;}
-
-    /* (prompts-btn-primary is in Header section above) */
-
-    /* Modal */
-    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center;}
-    .modal-overlay.open{display:flex;}
-    .modal{background:var(--bg2);border:1px solid var(--border);border-radius:12px;width:calc(100vw - 40px);height:calc(100vh - 40px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.15);}
-    .modal-header{display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);flex-shrink:0;}
-    .modal-title{font-size:14px;font-weight:600;color:var(--text);}
-    .modal-close{margin-left:auto;background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;line-height:1;padding:2px 6px;border-radius:4px;}
-    .modal-close:hover{background:var(--bg3);color:var(--text);}
-.modal-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
-    .mtab{padding:8px 14px;font-size:13px;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.15s;}
-    .mtab:hover{color:var(--text2);}
-    .mtab.active{color:var(--accent);border-bottom:2px solid var(--accent);font-weight:600;background:rgba(59,110,240,0.08);}
-    .modal-body{flex:1;overflow:hidden;padding:12px;display:flex;gap:10px;}
-    .prompt-layout{flex:1;display:flex;gap:0;min-height:0;min-width:0;}
-    .prompt-toc{width:350px;min-width:350px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;}
-    .prompt-toc-resize{width:8px;flex-shrink:0;cursor:col-resize;display:flex;align-items:center;justify-content:center;}
-    .prompt-toc-resize::after{content:'';width:3px;height:32px;background:var(--border);border-radius:2px;transition:background 0.15s;}
-    .prompt-toc-resize:hover::after,.prompt-toc-resize.dragging::after{background:var(--accent);}
-    .toc-panel-header{display:flex;align-items:center;padding:6px 10px 6px 12px;border-bottom:1px solid var(--border);flex-shrink:0;}
-    .toc-panel-title{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;}
-    .toc-scroll{flex:1;overflow-y:auto;padding:8px 0;}
-    .toc-header{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;padding:4px 12px 8px;border-bottom:1px solid var(--border);margin-bottom:4px;}
-    .toc-item{display:block;width:100%;text-align:left;background:none;border:none;cursor:pointer;padding:4px 12px;font-size:12px;color:var(--text2);line-height:1.4;transition:all 0.1s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .toc-item:hover{color:var(--accent);background:rgba(59,110,240,0.06);}
-    .toc-item.toc-h1{font-weight:600;color:var(--text);padding-left:12px;}
-    .toc-item.toc-h2{padding-left:20px;}
-    .toc-item.toc-h3{padding-left:30px;font-size:11px;color:var(--text3);}
-    .toc-empty{font-size:11px;color:var(--text3);padding:8px 12px;font-style:italic;}
-    .prompt-editor{display:block;flex:1;min-width:0;min-height:0;max-height:none;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:var(--mono);font-size:13px;line-height:1.7;color:var(--text);resize:none;outline:none;overflow-y:auto;margin-left:2px;}
-    .prompt-editor:focus{border-color:var(--accent);}
-    .modal-footer{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 10px;flex-shrink:0;}
-    .modal-footer-left{font-size:12px;color:var(--text3);}
-    .save-btn{padding:6px 14px;font-size:13px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;transition:all 0.15s;}
-    .save-btn:hover{background:#2d5ed4;}
-    .saved-badge{font-size:12px;color:var(--green);display:none;}
-    /* ─── Agent Model Sidebar ──────────────────────────────────────────────────── */
-    .prompt-model-sidebar{width:200px;min-width:200px;flex-shrink:0;background:var(--bg3);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;}
-    .pms-header{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;padding:8px 12px 6px;border-bottom:1px solid var(--border);flex-shrink:0;}
-    .pms-body{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:12px;}
-    .pms-section{display:flex;flex-direction:column;gap:4px;}
-    .pms-provider-label{font-size:11px;font-weight:600;color:var(--text2);}
-    .pms-select{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;padding:4px 6px;cursor:pointer;outline:none;}
-    .pms-select:focus{border-color:var(--accent);}
-    .pms-active-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-left:5px;vertical-align:middle;}
-
-    /* Sitemap view */
-
-/* Guide modal */
-    .guide-btn-secondary{display:flex;align-items:center;gap:5px;padding:6px 14px;font-size:13px;font-weight:500;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer;transition:all 0.15s;}
-    .guide-btn-secondary:hover{background:var(--bg3);color:var(--text);}
-    .guide-modal{background:var(--bg2);border:1px solid var(--border);border-radius:12px;width:860px;max-width:95vw;height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.15);}
-    .guide-body{flex:1;overflow-y:auto;padding:20px 24px;font-size:14px;}
-    .guide-section{margin-bottom:20px;}
-    .guide-section-title{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;}
-    .guide-desc{font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:16px;}
-    .guide-chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;}
-    .guide-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:500;}
-    .guide-chip.trigger{background:rgba(59,110,240,0.1);color:var(--accent);}
-    .guide-chip.action{background:rgba(15,155,106,0.1);color:var(--green);}
-    .guide-chip.state{background:rgba(108,79,212,0.1);color:var(--purple);}
-    .guide-code{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--text2);overflow-x:auto;white-space:pre;}
-    .guide-code .ck{color:var(--teal);}.guide-code .cs{color:var(--green);}.guide-code .cc{color:var(--text3);}
-    .guide-flow{display:flex;flex-direction:column;gap:6px;}
-    .guide-flow-step{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;}
-    .guide-flow-num{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
-    .guide-flow-label{font-size:14px;font-weight:500;color:var(--text);}
-    .guide-flow-sub{font-size:13px;color:var(--text2);margin-top:2px;}
-    .guide-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-    .guide-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;}
-    .guide-card-label{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
-    .guide-card-val{font-size:14px;color:var(--text2);line-height:1.5;}
-    .guide-divider{border:none;border-top:1px solid var(--border);margin:20px 0;}
-  </style>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
 <div class="app">
 
+  <!-- ACTIVITY BAR (left) -->
+  <div class="activity-bar">
+    <div class="ab-top">
+      <button class="ab-icon ab-provider active" data-provider="anthropic" onclick="setProvider('anthropic', this)" title="Claude">
+        <svg width="18" height="18" viewBox="0 0 46 32" fill="currentColor"><path d="M33.5 0H26l-13 32h7.5L33.5 0zM20 0h-7.5L0 32h7.5L20 0zM28 14l5 18h-7.5L22 21l6-7z"/></svg>
+      </button>
+      <button class="ab-icon ab-provider" data-provider="openai" onclick="setProvider('openai', this)" title="OpenAI">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M22.28 9.37a5.93 5.93 0 00-.51-4.89 6.05 6.05 0 00-6.52-2.9A5.93 5.93 0 0010.8.04a6.05 6.05 0 00-5.78 4.14A5.93 5.93 0 001.08 7.3a6.05 6.05 0 00.74 7.09 5.93 5.93 0 00.51 4.89 6.05 6.05 0 006.52 2.9A5.93 5.93 0 0013.3 23.96a6.05 6.05 0 005.78-4.14 5.93 5.93 0 003.94-3.12 6.05 6.05 0 00-.74-7.09zM13.3 22.34a4.43 4.43 0 01-2.85-1.03l.14-.08 4.73-2.73a.77.77 0 00.39-.67v-6.67l2 1.15a.07.07 0 01.04.06v5.53a4.46 4.46 0 01-4.45 4.44zM3.6 18.24a4.43 4.43 0 01-.53-2.99l.14.08 4.73 2.73a.77.77 0 00.77 0l5.78-3.34v2.31a.07.07 0 01-.03.06l-4.79 2.76a4.46 4.46 0 01-6.07-1.61zM2.34 7.89A4.43 4.43 0 014.67 5.96v5.62a.77.77 0 00.39.67l5.78 3.34-2 1.15a.07.07 0 01-.07 0L4 13.98a4.46 4.46 0 01-1.63-6.09zm17.15 3.99l-5.78-3.34 2-1.15a.07.07 0 01.07 0l4.79 2.76a4.46 4.46 0 01-.68 8.05v-5.65a.77.77 0 00-.39-.67zm1.99-3l-.14-.08-4.73-2.73a.77.77 0 00-.77 0l-5.78 3.34V7.1a.07.07 0 01.03-.06l4.79-2.76a4.46 4.46 0 016.6 4.6zM9.48 12.97l-2-1.15a.07.07 0 01-.04-.06V6.23a4.46 4.46 0 017.3-3.41l-.14.08-4.73 2.73a.77.77 0 00-.39.67v6.67zm1.09-2.34L12 9.75l1.44.83v1.67l-1.44.83-1.44-.83v-1.67z"/></svg>
+      </button>
+      <button class="ab-icon ab-provider" data-provider="gemini" onclick="setProvider('gemini', this)" title="Gemini">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C12 6.63 6.63 12 0 12c6.63 0 12 5.37 12 12 0-6.63 5.37-12 12-12-6.63 0-12-5.37-12-12z"/></svg>
+      </button>
+      <button class="ab-icon ab-provider" data-provider="kimi" onclick="setProvider('kimi', this)" title="Kimi">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 016.93 4H5.07A8 8 0 0112 4zm-5.66 5h11.32a8 8 0 010 6H6.34a8 8 0 010-6zM12 20a8 8 0 01-6.93-4h13.86A8 8 0 0112 20z"/></svg>
+      </button>
+    </div>
+    <div class="ab-bottom"></div>
+
+    <!-- Flyout panel -->
+    <div class="ab-flyout" id="ab-flyout" style="display:none;">
+      <div class="ab-flyout-header">
+        <span id="ab-flyout-title">Claude</span>
+        <div class="status-dot" id="status-dot"></div>
+      </div>
+      <div class="ab-flyout-body">
+        <label class="ab-flyout-label" id="api-key-label">API Key</label>
+        <input type="password" id="api-key-anthropic" class="api-key-input" placeholder="sk-ant-..." oninput="onKeyInput('anthropic')" data-provider="anthropic">
+        <input type="password" id="api-key-openai" class="api-key-input" placeholder="sk-..." oninput="onKeyInput('openai')" data-provider="openai" style="display:none;">
+        <input type="password" id="api-key-gemini" class="api-key-input" placeholder="AI..." oninput="onKeyInput('gemini')" data-provider="gemini" style="display:none;">
+        <input type="password" id="api-key-kimi" class="api-key-input" placeholder="sk-..." oninput="onKeyInput('kimi')" data-provider="kimi" style="display:none;">
+        <button class="ab-flyout-clear" onclick="clearApiKey()">Clear key</button>
+        <div class="ab-flyout-model">
+          <span class="ab-flyout-label">Model</span>
+          <div id="model-label" class="model-label"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- CHAT PANEL -->
   <div class="chat-panel">
 
-    <div class="header">
-      <span class="logo">metastory AI <span class="logo-env">— Playground</span></span>
-      <span class="spacer"></span>
-<button class="guide-btn-secondary" onclick="openGuideModal()">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 5.5v4M6.5 4a.5.5 0 100-1 .5.5 0 000 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-        Guide
-      </button>
-      <button class="prompts-btn-primary" onclick="openPromptsModal()">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 4.5h6M3.5 6.5h6M3.5 8.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-        Prompts
-      </button>
-    </div>
-
-    <div class="toolbar">
-      <div class="provider-tabs">
-        <button class="ptab active" onclick="setProvider('anthropic')">Claude</button>
-        <button class="ptab" onclick="setProvider('openai')">OpenAI</button>
-        <button class="ptab" onclick="setProvider('gemini')">Gemini</button>
-        <button class="ptab" onclick="setProvider('kimi')">Kimi</button>
-      </div>
-      <span class="spacer"></span>
-      <div class="status-dot" id="status-dot"></div>
-      <span class="api-key-label" id="api-key-label">Claude API Key:</span>
-      <input type="password" id="api-key-anthropic" class="api-key-input" placeholder="sk-ant-..." oninput="onKeyInput('anthropic')" data-provider="anthropic">
-      <input type="password" id="api-key-openai" class="api-key-input" placeholder="sk-..." oninput="onKeyInput('openai')" data-provider="openai" style="display:none;">
-      <input type="password" id="api-key-gemini" class="api-key-input" placeholder="AI..." oninput="onKeyInput('gemini')" data-provider="gemini" style="display:none;">
-      <input type="password" id="api-key-kimi" class="api-key-input" placeholder="sk-..." oninput="onKeyInput('kimi')" data-provider="kimi" style="display:none;">
-      <button class="toolbar-btn" onclick="clearApiKey()" title="Clear API Key">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4h8M3 4V3a1 1 0 011-1h4a1 1 0 011 1v1M5 6v3M7 6v3M3 4l.5 6a1 1 0 001 1h3a1 1 0 001-1L9 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <div id="model-label" class="model-label"></div>
-      <div class="toolbar-sep"></div>
-      <button class="toolbar-btn" onclick="clearChat()" title="Clear Chat">
+    <div class="chat-panel-actions">
+      <button class="chat-action-btn" onclick="clearChat()">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1.5 6a4.5 4.5 0 018.4-2.2M10.5 6a4.5 4.5 0 01-8.4 2.2M10.5 1.5v2.3h-2.3M1.5 10.5V8.2h2.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Clear Chat
+        <span class="chat-action-btn-label">Clear Chat</span>
+      </button>
+      <button class="chat-action-btn" onclick="openGuideModal()">
+        <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 5.5v4M6.5 4a.5.5 0 100-1 .5.5 0 000 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <span class="chat-action-btn-label">Guide</span>
+      </button>
+      <button class="chat-action-btn" onclick="openPromptsModal()">
+        <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 4.5h6M3.5 6.5h6M3.5 8.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <span class="chat-action-btn-label">Prompts</span>
       </button>
     </div>
 
@@ -435,19 +83,22 @@
       <div id="cb-widget" style="display:none;" class="cb-widget-container"></div>
       <div id="chat-input-area" style="display:contents;">
         <div class="input-box">
-          <div id="file-preview" style="display:none;" class="file-preview">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 1h6l3 3v9H3V1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-            <span id="file-name">file.pdf</span>
-            <button onclick="removeFile()">×</button>
+          <div class="context-tag-bar" id="context-tag-bar" style="display:none;">
+            <button class="context-tag-label" id="context-tag-label" onclick="closeContextMode()" title="Back to Chat">
+              <span class="context-tag-text">Builder</span>
+              <span class="context-tag-x">×</span>
+            </button>
           </div>
+          <div id="file-preview" style="display:none;" class="file-preview"></div>
           <div class="input-wrap">
-            <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)" oninput="autoResize(this)"></textarea>
+            <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)" oninput="onInputChange(this)"></textarea>
           </div>
+          <div id="next-actions-bar" style="display:none;"></div>
           <div class="input-row">
             <button class="file-btn" onclick="document.getElementById('file-input').click()" title="Upload PDF or DOCX">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 7.5l-5.5 5.5a4 4 0 01-5.65-5.65l5.5-5.5a2.5 2.5 0 013.54 3.54l-5.5 5.5a1 1 0 01-1.42-1.42L10.5 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
-            <input type="file" id="file-input" accept=".pdf,.docx" style="display:none" onchange="onFileSelect(event)">
+            <input type="file" id="file-input" accept=".pdf,.docx" multiple style="display:none" onchange="onFileSelect(event)">
             <div style="flex:1"></div>
             <button class="send-btn" id="send-btn" onclick="sendMessage()" title="Send">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M7 1l-4 4M7 1l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -466,13 +117,17 @@
   <div class="sidebar" id="sidebar">
     <div class="sidebar-resize" id="sidebar-resize"></div>
     <div class="sidebar-header">
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2"/></svg>
-      Debug Panel
+      <div class="sidebar-header-left">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.2"/></svg>
+        Debug Panel
+      </div>
+      <div class="sidebar-header-right"></div>
     </div>
     <div class="sidebar-tabs">
-      <div class="stab active" onclick="showTab('tab-io')">Input / Output</div>
-      <div class="stab" onclick="showTab('tab-state')">State</div>
-      <div class="stab" onclick="showTab('tab-tokens')">Tokens</div>
+      <div class="stab active" onclick="showTab('tab-io', this)">Input / Output</div>
+      <div class="stab" onclick="showTab('tab-state', this)">State</div>
+      <div class="stab" onclick="showTab('tab-tokens', this)">Tokens</div>
+      <div class="stab" onclick="showTab('tab-prompt-stack', this); renderPromptStackTab();">Prompt Stack</div>
     </div>
     <div class="sidebar-content">
 
@@ -513,11 +168,15 @@
         </div>
         <div class="state-item">
           <div class="state-label">Documents</div>
-          <div id="st-docs"><div class="state-empty">No documents yet</div></div>
+          <div id="st-docs"><div class="state-empty">—</div></div>
         </div>
         <div class="state-item">
-          <div class="state-label">Manual Inputs</div>
-          <div id="st-manual"><div class="state-empty">No manual inputs yet</div></div>
+          <div class="state-label">Source Text</div>
+          <div id="st-text"><div class="state-empty">—</div></div>
+        </div>
+        <div class="state-item">
+          <div class="state-label">Additional Inputs</div>
+          <div id="st-additional"><div class="state-empty">—</div></div>
         </div>
         <div class="state-item">
           <div class="state-label">Project Summary</div>
@@ -563,6 +222,11 @@
 
         <div class="json-title" style="margin-top:14px;"><div class="dot" style="background:var(--accent)"></div>REQUEST LOG</div>
         <div id="token-log" style="font-size:11px;color:var(--text3);">No requests yet.</div>
+      </div>
+
+      <div id="tab-prompt-stack" class="sidebar-panel">
+        <div id="prompt-stack-empty" style="color:var(--text3);font-size:12px;padding:8px 0;">No prompt composition yet — send a message to populate.</div>
+        <div id="prompt-stack-content" style="display:none;"></div>
       </div>
 
     </div>
@@ -687,7 +351,7 @@
           <span class="ck">"next_actions"</span>: { ... }, <span class="ck">"pending_free_input"</span>: { ... } }
 
           <span class="cc">// route_to_agent — hand off to specialist</span>
-          { <span class="ck">"action"</span>: <span class="cs">"route_to_agent"</span>, <span class="ck">"agent"</span>: <span class="cs">"structure_generator"</span>,
+          { <span class="ck">"action"</span>: <span class="cs">"route_to_agent"</span>, <span class="ck">"agent"</span>: <span class="cs">"agent_builder"</span>,
           <span class="ck">"handoff"</span>: { generation_type, mode } }
           <span class="cc">→ UI: new LLM call to target agent with full state</span></div>
       </div>
@@ -710,7 +374,7 @@
         <div class="guide-section-title">Role</div>
         <div class="guide-desc">Generates the app structure — pages and modules — rendered as an interactive structure card. Supports generate, refine, resolve assumptions, and diff modes.</div>
         <div class="guide-chip-row">
-          <span class="guide-chip trigger">Trigger: route_to_agent → structure_generator</span>
+          <span class="guide-chip trigger">Trigger: route_to_agent → agent_builder</span>
           <span class="guide-chip state">Reads: project_context, documents, manual_inputs, existing_structure</span>
           <span class="guide-chip state">Writes: state.existing_structure, state.project_context</span>
         </div>
@@ -782,8 +446,9 @@
       <button class="modal-close" onclick="closePromptsModal()">×</button>
     </div>
     <div class="modal-tabs">
-      <div class="mtab active" onclick="showPromptTab('chat_agent')">Chat Agent</div>
-      <div class="mtab" onclick="showPromptTab('structure_generator')">Structure Generator</div>
+      <div class="mtab active" onclick="showPromptTab('agent_chat')">Chat Agent</div>
+      <div class="mtab" onclick="showPromptTab('agent_builder')">Builder Agent</div>
+      <div class="mtab" onclick="showPromptTab('agent_interviewer')">Interviewer Agent</div>
     </div>
     <div class="modal-body">
       <div class="prompt-layout" id="prompt-layout">
@@ -814,6 +479,7 @@
 </div>
 
 <script src="js/state.js"></script>
+<script src="js/language.js"></script>
 <script src="js/next-actions.js"></script>
 <script src="js/prompts.js"></script>
 <script src="js/ui.js"></script>
@@ -867,10 +533,31 @@
   })();
 
   // Restore last chat session on load
+  // Close flyout on click outside
+  document.addEventListener('click', (e) => {
+    const flyout = document.getElementById('ab-flyout');
+    const bar = document.querySelector('.activity-bar');
+    if (flyout && flyout.style.display !== 'none' && !bar.contains(e.target)) {
+      flyout.style.display = 'none';
+    }
+  });
+
   document.addEventListener('DOMContentLoaded', () => {
     restoreChat();
     updateStatePanel();
   });
 </script>
+
+<!-- Language Modal -->
+<div class="lang-modal-overlay" id="lang-modal" onclick="if(event.target===this)closeLanguageModal()">
+  <div class="lang-modal">
+    <div class="lang-modal-header">
+      <span>Output Language</span>
+      <button class="lang-modal-close" onclick="closeLanguageModal()">×</button>
+    </div>
+    <div class="lang-modal-list" id="lang-modal-list"></div>
+  </div>
+</div>
+
 </body>
 </html>

@@ -2,139 +2,177 @@
 
 function parseJSON(raw) {
   let text = raw.trim();
+  // Try direct parse first (covers clean JSON responses)
+  try { return JSON.parse(text); } catch (_) {}
   // Extract from markdown code blocks
   const codeMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (codeMatch) text = codeMatch[1].trim();
-  // Extract first complete JSON object { ... }
+  if (codeMatch) {
+    try { return JSON.parse(codeMatch[1].trim()); } catch (_) {}
+    text = codeMatch[1].trim();
+  }
+  // Fallback: extract first complete JSON object { ... } via brace depth
+  // Handles braces inside strings correctly
   const start = text.indexOf('{');
   if (start === -1) throw new Error('No JSON object found in response');
-  let depth = 0, end = -1;
+  let depth = 0, inString = false, escape = false, end = -1;
   for (let i = start; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
   }
   if (end === -1) throw new Error('Incomplete JSON object in response');
   return JSON.parse(text.substring(start, end + 1));
 }
 
 /**
- * Prepend extracted PDF text (page-structured) to the state JSON message.
- * Returns the combined string to send as user message.
+ * Prepend extracted document text to the state JSON message.
+ * Supports multiple files — each becomes its own [DOCUMENT: name] block.
  */
 function buildUserMessage(stateMsg) {
-  if (!pendingFile || !pendingFileText) return stateMsg;
-  const block = `[DOCUMENT: ${pendingFile.name}]\n\n${pendingFileText}`;
-  console.log('[LLM] injecting PDF text:', pendingFileText.length, 'chars');
-  return block + '\n\n' + stateMsg;
+  const withText = pendingFiles.filter(f => f.text);
+  if (withText.length === 0) return stateMsg;
+  const blocks = withText.map(f => `[DOCUMENT: ${f.file.name}]\n\n${f.text}`);
+  const totalChars = withText.reduce((n, f) => n + f.text.length, 0);
+  console.log('[LLM] injecting', withText.length, 'document(s),', totalChars, 'chars total');
+  return blocks.join('\n\n') + '\n\n' + stateMsg;
 }
 
-async function callLLM(key, payload, agentKey = 'chat_agent') {
+// ─── Low-level provider calls (internal — use callAgent instead) ─────────────
+
+async function _callProvider(key, userMsg, agentKey, signal) {
+  const content = buildUserMessage(userMsg);
+  const model   = getModelForAgent(agentKey);
+  // Extract mode from payload for sub-prompt selection
+  let mode = null;
+  try { mode = JSON.parse(userMsg).mode; } catch(e) {}
+  const system  = getPromptForAgent(agentKey, mode);
+
+  if (provider === 'anthropic') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({ model, max_tokens: 8192, system, messages: [{ role: 'user', content }] })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    trackTokens(data, agentKey);
+    return parseJSON(data.content[0].text);
+  }
+
+  if (provider === 'openai') {
+    const res = await fetch('/openai', {
+      method: 'POST', signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key,
+        payload: { model, response_format: { type: 'json_object' },
+          messages: [{ role: 'system', content: system }, { role: 'user', content }] }
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    trackTokens(data, agentKey);
+    return parseJSON(data.choices[0].message.content);
+  }
+
+  if (provider === 'gemini') {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST', signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: content }] }],
+        generationConfig: { response_mime_type: 'application/json' }
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    trackTokens(data, agentKey);
+    return parseJSON(data.candidates[0].content.parts[0].text);
+  }
+
+  if (provider === 'kimi') {
+    const res = await fetch('/kimi', {
+      method: 'POST', signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key,
+        payload: { model, response_format: { type: 'json_object' },
+          messages: [{ role: 'system', content: system }, { role: 'user', content }] }
+      })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+    trackTokens(data, agentKey);
+    return parseJSON(data.choices[0].message.content);
+  }
+
+  throw new Error(`Unknown provider: ${provider}`);
+}
+
+// ─── Unified agent call — handles loading, abort, debug, errors ──────────────
+
+/**
+ * Call an LLM agent with full lifecycle management.
+ *
+ * @param {string} agentKey   - 'agent_chat' | 'agent_builder' | 'agent_interviewer'
+ * @param {object} payload    - The state/payload object to send
+ * @param {object} [opts]     - Options
+ * @param {boolean} [opts.showLoading=true]  - Show/remove loading spinner
+ * @param {boolean} [opts.showDebug=true]    - Update debug panel
+ * @param {boolean} [opts.setModelLabel=false] - Temporarily show this agent's model in toolbar
+ * @param {string}  [opts.fileName=null]     - Attached file name for debug
+ * @returns {Promise<object>} Parsed JSON response from LLM
+ * @throws {Error} On LLM error or abort
+ */
+async function callAgent(agentKey, payload, opts = {}) {
+  const { showLoading = true, showDebug = true, setModelLabel = false, fileName = null } = opts;
+  const key = getActiveKey();
+  if (!key) throw new Error(`Please enter your ${PROVIDER_LABELS[provider]} API key`);
+
+  const abort = new AbortController();
+  const prevController = activeAbortController;
+  activeAbortController = abort;
+
+  if (setModelLabel) setModelLabelForAgent(agentKey);
+  if (showDebug) showDebugInput(payload, fileName, agentKey);
+
+  const loadingEl = showLoading ? addLoading() : null;
+  const wasLoading = isLoading;
+  isLoading = true;
+  document.getElementById('send-btn').style.display = 'none';
+  document.getElementById('stop-btn').style.display = 'flex';
+
+  try {
+    const userMsg = JSON.stringify(payload, null, 2);
+    const response = await _callProvider(key, userMsg, agentKey, abort.signal);
+    if (showDebug) showDebugOutput(response, agentKey);
+    return response;
+  } finally {
+    if (loadingEl) removeLoading(loadingEl);
+    if (setModelLabel) updateModelLabel();
+    if (!wasLoading) {
+      isLoading = false;
+      document.getElementById('send-btn').style.display = 'flex';
+      document.getElementById('stop-btn').style.display = 'none';
+    }
+    if (activeAbortController === abort) {
+      activeAbortController = prevController;
+    }
+  }
+}
+
+// Legacy compat — used by sendMessage in chat.js for the initial chat call
+async function callLLM(key, payload, agentKey = 'agent_chat') {
   const userMsg = JSON.stringify(payload, null, 2);
-
-  if (provider === 'anthropic') return callAnthropic(key, userMsg, agentKey);
-  if (provider === 'openai') return callOpenAI(key, userMsg, agentKey);
-  if (provider === 'gemini') return callGemini(key, userMsg, agentKey);
-  if (provider === 'kimi') return callKimi(key, userMsg, agentKey);
-}
-
-// ─── Anthropic ───────────────────────────────────────────────────────────────
-
-async function callAnthropic(key, userMsg, agentKey = 'chat_agent') {
-  const content = buildUserMessage(userMsg);
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    signal: activeAbortController?.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: getModelForAgent(agentKey),
-      max_tokens: 8192,
-      system: getPromptForAgent(agentKey),
-      messages: [{ role: 'user', content }]
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  trackTokens(data, agentKey);
-  return parseJSON(data.content[0].text);
-}
-
-// ─── OpenAI ──────────────────────────────────────────────────────────────────
-
-async function callOpenAI(key, userMsg, agentKey = 'chat_agent') {
-  const content = buildUserMessage(userMsg);
-
-  const res = await fetch('/openai', {
-    method: 'POST',
-    signal: activeAbortController?.signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      key,
-      payload: {
-        model: getModelForAgent(agentKey),
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: getPromptForAgent(agentKey) },
-          { role: 'user', content }
-        ]
-      }
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-  trackTokens(data, agentKey);
-  return parseJSON(data.choices[0].message.content);
-}
-
-// ─── Gemini ──────────────────────────────────────────────────────────────────
-
-async function callGemini(key, userMsg, agentKey = 'chat_agent') {
-  const content = buildUserMessage(userMsg);
-
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${getModelForAgent(agentKey)}:generateContent?key=${key}`, {
-    method: 'POST',
-    signal: activeAbortController?.signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: getPromptForAgent(agentKey) }] },
-      contents: [{ role: 'user', parts: [{ text: content }] }],
-      generationConfig: { response_mime_type: 'application/json' }
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  trackTokens(data, agentKey);
-  return parseJSON(data.candidates[0].content.parts[0].text);
-}
-
-// ─── Kimi (Moonshot AI) — OpenAI-compatible ──────────────────────────────────
-
-async function callKimi(key, userMsg, agentKey = 'chat_agent') {
-  const content = buildUserMessage(userMsg);
-
-  const res = await fetch('/kimi', {
-    method: 'POST',
-    signal: activeAbortController?.signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      key,
-      payload: {
-        model: getModelForAgent(agentKey),
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: getPromptForAgent(agentKey) },
-          { role: 'user', content }
-        ]
-      }
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-  trackTokens(data, agentKey);
-  return parseJSON(data.choices[0].message.content);
+  return _callProvider(key, userMsg, agentKey, activeAbortController?.signal);
 }

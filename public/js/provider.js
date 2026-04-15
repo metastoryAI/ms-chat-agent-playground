@@ -1,10 +1,10 @@
 // ─── PROVIDER ────────────────────────────────────────────────────────────────
-const providerLabels = { anthropic: 'Claude', openai: 'OpenAI', gemini: 'Gemini', kimi: 'Kimi' };
+// PROVIDER_LABELS defined in state.js
 
 function populateModelSelect() {
   const models = PROVIDER_MODELS[provider] || [];
-  // Prefer the chat_agent-specific model for this provider, fallback to global saved
-  const agentSaved  = localStorage.getItem(`ms_agent_model_chat_agent_${provider}`);
+  // Prefer the agent_chat-specific model for this provider, fallback to global saved
+  const agentSaved  = localStorage.getItem(`ms_agent_model_agent_chat_${provider}`);
   const globalSaved = localStorage.getItem('ms_model_' + provider);
   const resolved    = (agentSaved && models.find(m => m.id === agentSaved)) ? agentSaved : globalSaved;
   selectedModel = resolved || models[0]?.id || null;
@@ -12,10 +12,19 @@ function populateModelSelect() {
 }
 
 function updateModelLabel() {
-  const models = PROVIDER_MODELS[provider] || [];
-  const model  = models.find(m => m.id === getSelectedModel());
-  const label  = document.getElementById('model-label');
-  if (label) label.textContent = model ? model.name : (getSelectedModel() || '');
+  const models  = PROVIDER_MODELS[provider] || [];
+  const modelId = getSelectedModel();
+  const model   = models.find(m => m.id === modelId);
+  const label   = document.getElementById('model-label');
+  if (label) label.textContent = model ? model.name : (modelId || '');
+}
+
+function setModelLabelForAgent(agentKey) {
+  const models  = PROVIDER_MODELS[provider] || [];
+  const modelId = getModelForAgent(agentKey);
+  const model   = models.find(m => m.id === modelId);
+  const label   = document.getElementById('model-label');
+  if (label) label.textContent = model ? model.name : (modelId || '');
 }
 
 function onModelChange(val) {
@@ -26,12 +35,11 @@ function onModelChange(val) {
   updateStatePanel();
 }
 
-function setProvider(p) {
+function setProvider(p, el) {
   if (isLoading) return;
 
   const old = providerStates[provider];
   old.docCounter = docCounter;
-  old.manualCounter = manualCounter;
   old.messagesHTML = document.getElementById('messages').innerHTML;
   old.debugInput = document.getElementById('debug-input').textContent;
   old.debugOutput = document.getElementById('debug-output').textContent;
@@ -41,7 +49,6 @@ function setProvider(p) {
 
   state = providerStates[p];
   docCounter = state.docCounter;
-  manualCounter = state.manualCounter;
 
   const msgEl = document.getElementById('messages');
   if (state.messagesHTML) {
@@ -65,14 +72,22 @@ function setProvider(p) {
     document.getElementById('io-content').style.display = 'none';
   }
 
-  document.querySelectorAll('.ptab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
+  // Update activity bar icons
+  document.querySelectorAll('.ab-provider').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
   document.getElementById('st-provider').textContent = p;
-  document.getElementById('api-key-label').textContent = providerLabels[p] + ' API Key:';
 
+  // Update flyout
+  const flyoutTitle = document.getElementById('ab-flyout-title');
+  if (flyoutTitle) flyoutTitle.textContent = PROVIDER_LABELS[p];
   document.querySelectorAll('.api-key-input[data-provider]').forEach(el => {
     el.style.display = el.dataset.provider === p ? '' : 'none';
   });
+
+  // Show flyout on provider switch
+  const flyout = document.getElementById('ab-flyout');
+  if (flyout) flyout.style.display = 'block';
+
   populateModelSelect();
   updateStatusDot();
   updateStatePanel();
@@ -108,11 +123,12 @@ function restoreKeys() {
     const key = localStorage.getItem('ms_key_' + p);
     if (key) document.getElementById('api-key-' + p).value = key;
   });
-  document.querySelectorAll('.ptab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.ptab').forEach(t => {
-    if (t.textContent === providerLabels[provider]) t.classList.add('active');
+  document.querySelectorAll('.ab-provider').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.ab-provider').forEach(t => {
+    if (t.dataset.provider === provider) t.classList.add('active');
   });
-  document.getElementById('api-key-label').textContent = providerLabels[provider] + ' API Key:';
+  const flyoutTitle = document.getElementById('ab-flyout-title');
+  if (flyoutTitle) flyoutTitle.textContent = PROVIDER_LABELS[provider];
   document.querySelectorAll('.api-key-input[data-provider]').forEach(el => {
     el.style.display = el.dataset.provider === provider ? '' : 'none';
   });
@@ -123,9 +139,9 @@ function restoreKeys() {
 restoreKeys();
 updateTokenPanel();
 
-function showTab(id) {
+function showTab(id, el) {
   document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.stab').forEach(t => t.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
 }

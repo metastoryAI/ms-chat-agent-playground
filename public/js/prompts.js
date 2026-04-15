@@ -3,7 +3,7 @@
 // Ensure every agent×provider combo has a saved model in localStorage at startup.
 // This guarantees getModelForAgent() never has to fall back to the global model.
 (function initAgentModelDefaults() {
-  const agents    = ['chat_agent', 'structure_generator'];
+  const agents    = ['agent_chat', 'agent_builder', 'agent_interviewer'];
   const providers = ['anthropic', 'openai', 'gemini', 'kimi'];
   agents.forEach(agent => {
     providers.forEach(p => {
@@ -16,16 +16,108 @@
   });
 })();
 
-let currentPromptTab = 'chat_agent';
+let currentPromptTab = 'agent_chat';
 let prompts = {
-  chat_agent: 'Loading...',
-  structure_generator: 'Loading...',
+  agent_chat:                     'Loading...',
+  agent_builder:                  'Loading...',
+  agent_interviewer:              'Loading...',
+  // Builder modes
+  generate_modules:               '',
+  generate_modules_features:      '',
+  generate_pages:                 '',
+  refine:                         '',
+  resolve:                        '',
+  diff:                           '',
+  // Interviewer modes
+  solve_open_points:              '',
+  enrich_context:                 '',
+  // Chat rules
+  chat_rules_input_detection:     '',
+  chat_rules_confidence:          '',
+  chat_rules_next_actions_tags:   '',
+  chat_rules_command_routing:     '',
+  // Chat templates
+  chat_templates_responses:       '',
+  // Chat actions
+  chat_action_analyze_document:   '',
+  chat_action_analyze_input:      '',
+  chat_action_answer:             '',
+  chat_action_route:              '',
+  chat_action_add_input:          '',
+  chat_action_modify_input:       '',
+  chat_action_remove_input:       '',
+  chat_action_clarify:            '',
+  extract_open_points:            '',
 };
 
 const PROMPT_FILES = {
-  chat_agent: '/prompts/chat-agent-v1.0.md',
-  structure_generator: '/prompts/structure-generator-agent-v1.0.md',
+  agent_chat:                     '/prompts/agents/agent-chat.md',
+  agent_builder:                  '/prompts/agents/agent-builder.md',
+  agent_interviewer:              '/prompts/agents/agent-interviewer.md',
+  // Builder modes
+  generate_modules:               '/prompts/modes/builder/generate/modules.md',
+  generate_modules_features:      '/prompts/modes/builder/generate/modules-features.md',
+  generate_pages:                 '/prompts/modes/builder/generate/pages.md',
+  refine:                         '/prompts/modes/builder/edit/refine.md',
+  resolve:                        '/prompts/modes/builder/edit/resolve.md',
+  diff:                           '/prompts/modes/builder/compare/diff.md',
+  // Interviewer modes
+  solve_open_points:              '/prompts/modes/interviewer/solve-open-points.md',
+  enrich_context:                 '/prompts/modes/interviewer/enrich-context.md',
+  // Chat rules
+  chat_rules_input_detection:     '/prompts/modes/chat/rules/input-detection.md',
+  chat_rules_confidence:          '/prompts/modes/chat/rules/confidence.md',
+  chat_rules_next_actions_tags:   '/prompts/modes/chat/rules/next-actions-tags.md',
+  chat_rules_command_routing:     '/prompts/modes/chat/rules/command-routing.md',
+  // Chat templates
+  chat_templates_responses:       '/prompts/modes/chat/templates/chat-responses.md',
+  // Chat actions
+  chat_action_analyze_document:   '/prompts/modes/chat/actions/analyze-document.md',
+  chat_action_analyze_input:      '/prompts/modes/chat/actions/analyze-input.md',
+  chat_action_answer:             '/prompts/modes/chat/actions/answer.md',
+  chat_action_route:              '/prompts/modes/chat/actions/route.md',
+  chat_action_add_input:          '/prompts/modes/chat/actions/add-input.md',
+  chat_action_modify_input:       '/prompts/modes/chat/actions/modify-input.md',
+  chat_action_remove_input:       '/prompts/modes/chat/actions/remove-input.md',
+  chat_action_clarify:            '/prompts/modes/chat/actions/clarify.md',
+  extract_open_points:            '/prompts/modes/chat/actions/extract-open-points.md',
 };
+
+// Dynamic chat mode files — only include what's needed for this call.
+// Reduces prompt size by ~60% on first call.
+function getChatModeFiles(hasDocuments) {
+  const hasInputs = state.inputs.length > 0;
+
+  // Always included — core routing and formatting
+  const files = [
+    'chat_rules_input_detection',
+    'chat_rules_confidence',
+    'chat_rules_next_actions_tags',
+    'chat_rules_command_routing',
+    'chat_templates_responses',
+  ];
+
+  // Document vs text input — mutually exclusive
+  if (hasDocuments) {
+    files.push('chat_action_analyze_document');
+  } else {
+    files.push('chat_action_analyze_input');
+  }
+
+  // Always needed for routing
+  files.push('chat_action_route');
+
+  // Only after first input exists
+  if (hasInputs) {
+    files.push('chat_action_answer');
+    files.push('chat_action_clarify');
+    files.push('chat_action_add_input');
+    files.push('chat_action_modify_input');
+    files.push('chat_action_remove_input');
+  }
+
+  return files;
+}
 
 async function loadPrompts() {
   for (const [key, url] of Object.entries(PROMPT_FILES)) {
@@ -63,7 +155,7 @@ function showPromptTab(key) {
   currentPromptTab = key;
   const promptTabs = document.querySelectorAll('#prompts-modal .mtab');
   promptTabs.forEach(t => t.classList.remove('active'));
-  const tabs = ['chat_agent', 'structure_generator'];
+  const tabs = ['agent_chat', 'agent_builder', 'agent_interviewer'];
   const idx = tabs.indexOf(key);
   if (idx !== -1 && promptTabs[idx]) promptTabs[idx].classList.add('active');
   document.getElementById('prompt-editor').value = prompts[key] || '';
@@ -80,7 +172,7 @@ function renderTOC(text) {
     if (m) headers.push({ level: m[1].length, text: m[2].trim(), lineIndex });
   });
 
-  let html = '<div class="toc-header">Contents</div>';
+  let html = '';
   if (headers.length === 0) {
     html += '<div class="toc-empty">No headers found</div>';
   } else {
@@ -91,230 +183,9 @@ function renderTOC(text) {
   view.innerHTML = html;
 }
 
-// ─── FLOW VIEW ────────────────────────────────────────────────────────────────
-
-const AGENT_FLOWS = {
-
-  chat_agent: `<fa>── STEP 1: PRIORITY CHECK ──────────────────────────────────────</fa>
-<fa>Is a project present?</fa>
-  <fdim>documents[] not empty       ─┐
-  free_inputs[] not empty     ─┼─ YES → skip onboarding, go to Step 2
-  project_summary not null    ─┘
-  all empty / null            → NO  → answer Case 2</fdim>
-         <fout>[NA:EMPTY]</fout>  chat: short friendly prompt
-                                buttons: Upload Document / Enter Project Input
-
-<fa>── STEP 2: SPECIAL CASE ────────────────────────────────────────</fa>
-user_input = "" AND documents[] not empty?
-  YES → <fout>analyze_document</fout> <fdim>(user uploaded file without typing)</fdim>
-  NO  → continue to Step 3
-
-<fa>── STEP 3: CONFLICT CHECK ──────────────────────────────────────</fa>
-<fdim>(free_inputs[] or documents[] not empty)
-AND new input describes a CLEARLY DIFFERENT project?
-(different domain / app type / core purpose)</fdim>
-  YES → <fout>clarify</fout> <fout>[NA:CONFLICT]</fout>
-        <fdim>pending_free_input:
-          source: "document" (if file) | "text" (if free text)
-          document_name: filename | null
-        buttons: Keep existing project / Switch to new project</fdim>
-  NO  → continue to Step 4
-
-<fa>── STEP 4: PENDING INPUTS CHECK ────────────────────────────────</fa>
-<fdim>(only applies when user gives explicit generate command)
-hasPendingInputs = manual_inputs.some(a => a.added_at > project_context.built_at)</fdim>
-  YES → <fout>clarify</fout> <fout>[NA:PENDING]</fout>
-        <fdim>buttons: Generate with new inputs / Update context first (Recommended)</fdim>
-  NO  → continue to Step 5
-
-<fa>── STEP 5: INPUT TYPE DETECTION ────────────────────────────────</fa>
-
-📄 <fa>File uploaded</fa> <fdim>(or user_input = "" with file present)</fdim>
-    → always <fout>analyze_document</fout> FIRST <fdim>[Template A]</fdim>
-    → no project_context     → <fout>[NA:NO_CONTEXT|RECOMMENDED:XX-XX|DIRECT:XX]</fout>
-    → project_context exists → <fout>[NA:CONTEXT_UPDATE_DOC]</fout>
-          <fdim>Update Context (Recommended) / Generate Structure Directly</fdim>
-
-📝 <fa>Free text</fa> <fdim>(describes project, no file)</fdim>
-    → <fout>analyze_input</fout> <fdim>[Template B]</fdim>  → <fout>[NA:STATE]</fout>
-
-❓ <fa>Question about project</fa>
-    → <fout>answer Case 1</fout>  <fdim>direct answer + transition line at end</fdim>
-    → <fout>[NA:STATE]</fout>
-
-💬 <fa>Off-topic / greeting / test</fa>
-    project exists → <fout>answer</fout> <fdim>honestly, suggest what to do</fdim>  → <fout>[NA:STATE]</fout>
-    no project     → <fout>answer Case 2</fout>  → <fout>[NA:EMPTY]</fout>
-
-➕ <fa>New info</fa> <fdim>(not yet in context)</fdim>
-    → <fout>add_to_manual_input</fout> <fdim>[Template C — added]</fdim>  → <fout>[NA:STATE]</fout>
-
-✏️  <fa>Correction</fa> <fdim>(changes existing info)</fdim>
-    → <fout>modify_manual_input</fout> <fdim>[Template C — updated]</fdim>  → <fout>[NA:STATE]</fout>
-
-🎯 <fa>Generate — NO explicit type</fa>
-    → <fout>clarify</fout> <fout>[NA:STRUCTURE_TYPE|DIRECT:XX]</fout>
-      <fdim>buttons: Only Modules / Modules + Features / Full Structure</fdim>
-
-🚀 <fa>Generate — EXPLICIT type</fa>
-    hasPendingInputs?       → <fout>clarify [NA:PENDING]</fout> <fdim>(see Step 4)</fdim>
-    no pending, no context  → <fout>route_to_agent: structure_generator</fout> <fdim>(fresh)</fdim>
-    no pending, ctx exists  → <fout>route_to_agent: structure_generator</fout> <fdim>(diff)</fdim>
-
-🔁 <fa>keep_existing_project</fa>
-    free_inputs[] not empty → <fout>analyze_input</fout> <fdim>[Template B — keep opening]</fdim>
-    documents[] not empty   → <fout>analyze_document</fout> <fdim>[Template A]</fdim>
-    → <fout>[NA:STATE]</fout>
-
-🔀 <fa>switch_to_new_project / [switch:document]</fa>
-    file present → <fout>analyze_document</fout> <fdim>[Template A — switch opening]</fdim>
-    no file      → <fout>analyze_input</fout> <fdim>[Template B — switch opening]</fdim>
-
-<fa>── STEP 6: NEXT ACTIONS TAG SELECTION ──────────────────────────</fa>
-<fdim>(applies to all actions except route_to_agent and clarify conflict)</fdim>
-
-no project at all          → <fout>[NA:EMPTY]</fout>
-no project_context         → <fout>[NA:NO_CONTEXT|RECOMMENDED:XX-XX|DIRECT:XX]</fout>
-context + gaps[] not empty → <fout>[NA:CONTEXT_WITH_GAPS|RECOMMENDED:XX-XX|DIRECT:XX]</fout>
-context + gaps[] empty     → <fout>[NA:CONTEXT_READY|CONFIDENCE:XX]</fout>
-new doc + context exists   → <fout>[NA:CONTEXT_UPDATE_DOC]</fout>
-existing_structure set     → <fout>[NA:STRUCTURE_INSERTED]</fout>
-conflict detected          → <fout>[NA:CONFLICT]</fout>
-pending inputs             → <fout>[NA:PENDING]</fout>
-generate type unclear      → <fout>[NA:STRUCTURE_TYPE|DIRECT:XX]</fout>
-
-<fa>── STEP 7: CONFIDENCE ESTIMATION ───────────────────────────────</fa>
-RECOMMENDED <fdim>(context built first)</fdim>
-  sparse input   → 65-75%   moderate input → 75-85%   detailed input → 85-95%
-  <fdim>always a range — never a single value (e.g. 75-85 not 80)</fdim>
-
-DIRECT <fdim>(without context)</fdim>
-  minimal input  → 25-35%   moderate input → 35-45%   detailed input → 40-50%
-  +5 if documents[] AND manual_inputs[] both present — never exceed 50%
-
-CONFIDENCE <fdim>(for [NA:CONTEXT_READY] only)</fdim>
-  take from project_context.confidence — round to nearest 5
-
-<fa>── TEMPLATES ────────────────────────────────────────────────────</fa>
-<fa>Template A</fa> — analyze_document
-  opening: "Here is what I understood from the [detected format]:"
-  <fdim>detected format: transcript / meeting notes / email / specification / document
-  never use: PDF / DOCX</fdim>
-  body:    1 sentence (project + who + period) + Topics discussed: 4-6 bullets
-           Agreed approach: <fdim>(only if explicitly stated)</fdim>
-  language: always match document language
-
-<fa>Template B</fa> — analyze_input
-  opening (default): <fdim>"This is the current project context based on your input:"</fdim>
-  opening (switch):  <fdim>"You are now working with the new project:"</fdim>
-  opening (keep):    <fdim>"You are continuing with the current project:"</fdim>
-  body:    1 sentence from project_summary + Captured topics: 4-6 bullets
-           💡 The more details you add, the better the context will be.
-
-<fa>Template C</fa> — add/modify manual_input
-  opening (add):    <fdim>"[Topic] added — here is the current project overview:"</fdim>
-  opening (modify): <fdim>"[Topic] updated — here is the current project overview:"</fdim>
-  body:    1 sentence from updated project_summary + Current project overview: 3-5 bullets
-
-<fa>Template D</fa> — clarify
-  1 clear question only — max 2 sentences, no opening / no bullets
-  conflict variant: 1 short sentence only
-  <fdim>example: "This doesn't match the current project. Which one should I work with?"</fdim>
-
-answer <fdim>(no template)</fdim>
-  Case 1: direct answer + transition line at end
-  Case 2: short onboarding prompt 1-2 sentences
-  <fdim>never: confirmation / key topics / project recap / guess beyond context</fdim>
-
-<fa>── LANGUAGE RULES ───────────────────────────────────────────────</fa>
-chat_response → user/document language
-JSON keys · action values · button labels/subtext/tooltips → always English`,
-
-  structure_generator: `<fa>── INPUT ─────────────────────────</fa>
-generation_type: modules | modules_features
-                 full_structure | pages_only
-mode:            generate | refine | diff
-project_context: null → derive internally
-existing_structure: null → fresh | exists → diff/refine
-
-<fa>── project_context NULL ───────────</fa>
-Derive from documents[] + manual_inputs[]
-Do NOT ask questions
-Set store_project_context: true
-
-<fa>── MODE: generate ─────────────────</fa>
-│
-├─ generation_type: pages_only
-│   └─ <fout>→ pages only</fout>
-│
-├─ generation_type: modules
-│   └─ <fout>→ pages + modules</fout>
-│       action_buttons: Refine modules | Resolve assumptions | + Insert
-│
-├─ generation_type: modules_features
-│   └─ <fout>→ pages + modules + features</fout>
-│       action_buttons: Refine all | Resolve assumptions | + Insert
-│
-└─ generation_type: full_structure
-    └─ <fout>→ pages + modules + features + subfeatures</fout>
-        action_buttons: Refine structure | Resolve assumptions | + Insert
-        └─ <fdim>status: completed</fdim>
-            handoff_back → chat_agent (trigger: generation_completed)
-
-<fa>── MODE: refine ───────────────────</fa>
-refine_instruction provided by user
-Keep all existing unless instruction says remove
-Only change what instruction requests
-└─ <fout>→ full updated structure</fout> <fdim>status: completed</fdim>
-
-<fa>── MODE: diff ─────────────────────</fa>
-existing_structure exists
-Compare new context vs existing modules
-└─ return only changed or new modules
-    <fout>status: diff_completed</fout>
-    updated_modules[] + unchanged_count
-    is_new: true/false per module
-    handoff_back → chat_agent
-
-<fa>── PAGE TYPES (conditional) ───────</fa>
-project_summary  → always
-user_roles       → if roles mentioned
-core_process     → if process described
-tech_stack       → if stack defined
-integrations     → if integrations listed
-non_functional   → if NFRs mentioned
-target_audience  → if audience described
-mvp_scope        → if MVP discussed
-<fdim>only generate when content exists</fdim>
-
-<fa>── SOURCE TYPES ───────────────────</fa>
-Every element MUST have sources[]
-document     → from uploaded file
-user_input   → user typed in chat
-manual_input → via add_to_manual_input
-assumption   → no source, agent derived
-<fdim>no source → goes to assumptions[]</fdim>
-
-<fa>── CONFIDENCE / ASSUMPTION LABELS ─</fa>
-never generate below 35%
-50–75% → "with assumptions"
-75–90% → "minor assumptions"
-90%+   → "no assumptions needed"
-<fdim>never show % next to assumption labels</fdim>
-
-<fa>── ANTI-PATTERNS ──────────────────</fa>
-✗ never ask questions
-✗ never show features when type = modules
-✗ never lose modules in diff mode
-✗ never generate below 35%
-✗ never create element without sources[]
-✗ never omit action_buttons`
-
-};
-
 // ─── AGENT MODEL SIDEBAR ─────────────────────────────────────────────────────
 
-const PROVIDER_LABELS = { anthropic: 'Claude', openai: 'OpenAI', gemini: 'Gemini', kimi: 'Kimi' };
+// PROVIDER_LABELS defined in state.js
 
 function renderAgentModelSidebar(agentKey) {
   const body = document.getElementById('pms-body');
@@ -331,7 +202,7 @@ function renderAgentModelSidebar(agentKey) {
     }
     const isActive = p === provider;
     const opts = models.map(m =>
-      `<option value="${m.id}"${m.id === saved ? ' selected' : ''}>${m.name}</option>`
+        `<option value="${m.id}"${m.id === saved ? ' selected' : ''}>${m.name}</option>`
     ).join('');
     return `<div class="pms-section">
       <div class="pms-provider-label">${PROVIDER_LABELS[p]}${isActive ? '<span class="pms-active-dot" title="Active provider"></span>' : ''}</div>
@@ -342,8 +213,8 @@ function renderAgentModelSidebar(agentKey) {
 
 function setAgentModel(agentKey, providerKey, modelId) {
   localStorage.setItem(`ms_agent_model_${agentKey}_${providerKey}`, modelId);
-  // If this is the chat_agent and the current provider matches → sync toolbar label
-  if (agentKey === 'chat_agent' && providerKey === provider) {
+  // If this is agent_chat and the current provider matches → sync toolbar label
+  if (agentKey === 'agent_chat' && providerKey === provider) {
     selectedModel = modelId;
     updateModelLabel();
     updateStatePanel();
@@ -367,7 +238,7 @@ async function savePrompt() {
   prompts[currentPromptTab] = text;
 
   // Save to .md file on disk
-  const filename = PROMPT_FILES[currentPromptTab].split('/').pop(); // e.g. "chat-agent-v1.0.md"
+  const filename = PROMPT_FILES[currentPromptTab].split('/').pop(); // e.g. "agent-chat.md"
   try {
     const res = await fetch(`/api/prompts/file/${filename}`, {
       method: 'PUT',
@@ -388,10 +259,158 @@ async function savePrompt() {
 
 // ─── AGENT PROMPTS ────────────────────────────────────────────────────────────
 
-function getPromptForAgent(agent) {
-  const map = {
-    chat_agent: 'chat_agent',
-    structure_generator: 'structure_generator',
+// Builder mode → ordered list of prompt dict keys to bundle into one call.
+// Multi-key entries concatenate all files + append a merge footer so the LLM
+// returns one merged JSON object instead of the per-file atomic shape.
+const BUILDER_MODE_PROMPTS = {
+  generate:          ['generate_pages', 'generate_modules'],          // bundled: pages + modules
+  generate_features: ['generate_pages', 'generate_modules_features'], // bundled: pages + modules+features
+  generate_pages:    ['generate_pages'],                              // atomic (tree-flow friendly)
+  refine:            ['refine'],
+  resolve:           ['resolve'],
+  diff:              ['diff'],
+};
+
+// Interviewer mode → ordered list of prompt dict keys
+const INTERVIEWER_MODE_PROMPTS = {
+  solve_open_points: ['solve_open_points'],
+  enrich_context:    ['enrich_context'],
+};
+
+// Which top-level output slot each mode file populates.
+// Used to build the merge footer when multiple files are bundled.
+const MODE_SLOT = {
+  generate_pages:            'pages',
+  generate_modules:          'sections',
+  generate_modules_features: 'sections',
+};
+
+function buildMergeFooter(slotNames) {
+  const slotLines = slotNames.map(s => `  "${s}": [ ... from the ${s.toUpperCase()} section above ]`).join(',\n');
+  return `---
+
+## FINAL OUTPUT (bundled call)
+
+The sections above describe multiple output slots. Your response MUST be ONE JSON object merging all slots:
+
+\`\`\`json
+{
+  "status": "completed",
+${slotLines}
+}
+\`\`\`
+
+Ignore any "Return only" instructions in the individual sections — those apply when a section is sent alone. When bundled, combine all outputs into one JSON object with the exact shape above.`;
+}
+
+// ─── BACKEND TAB — live prompt composition tracking ─────────────────────────
+
+let _promptCompositionHistory = [];
+const PROMPT_HISTORY_MAX = 20;
+
+function recordPromptComposition(agent, mode, fileKeys) {
+  const entry = {
+    agent,
+    mode: mode || null,
+    timestamp: new Date().toLocaleTimeString(),
+    files: fileKeys.map(key => ({
+      key,
+      path: (PROMPT_FILES[key] || '').replace(/^\/prompts\//, ''),
+      size: (prompts[key] || '').length,
+    })),
   };
-  return prompts[map[agent] || 'chat_agent'];
+  _promptCompositionHistory.unshift(entry);
+  if (_promptCompositionHistory.length > PROMPT_HISTORY_MAX) {
+    _promptCompositionHistory.length = PROMPT_HISTORY_MAX;
+  }
+  renderPromptStackTab();
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  return `${(n / 1024).toFixed(1)} KB`;
+}
+
+function renderPromptStackTab() {
+  const emptyEl   = document.getElementById('prompt-stack-empty');
+  const contentEl = document.getElementById('prompt-stack-content');
+  if (!emptyEl || !contentEl) return;
+  if (_promptCompositionHistory.length === 0) {
+    emptyEl.style.display = 'block';
+    contentEl.style.display = 'none';
+    return;
+  }
+  emptyEl.style.display = 'none';
+  contentEl.style.display = 'block';
+
+  const renderEntry = (c, idx) => {
+    const total = c.files.reduce((s, f) => s + f.size, 0);
+    const isLatest = idx === 0;
+    return `
+      <div class="json-section" style="${isLatest ? '' : 'opacity:0.75;'}">
+        <div class="json-title">
+          <div class="dot" style="background:${isLatest ? 'var(--purple,#a78bfa)' : 'var(--text3)'}"></div>
+          ${isLatest ? 'LATEST' : '#' + (idx + 1)} · ${c.agent}${c.mode ? ' · ' + c.mode : ''} · ${c.timestamp}
+        </div>
+        <div style="font-size:11px;line-height:1.6;color:var(--text2);padding:4px 0 8px 0;">
+          <span style="color:var(--text3);">files:</span> <span style="color:var(--text1);">${c.files.length}</span>
+          &nbsp;·&nbsp;
+          <span style="color:var(--text3);">total:</span> <span style="color:var(--text1);">${fmtBytes(total)}</span>
+        </div>
+        <div style="font-size:11px;font-family:var(--mono,monospace);padding:2px 0;">
+          ${c.files.map((f, i) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid var(--border,#2a2a2a);">
+              <div style="color:var(--text3);width:18px;text-align:right;">${i + 1}</div>
+              <div style="flex:1;color:var(--text1);word-break:break-all;">${f.path}</div>
+              <div style="color:var(--text3);white-space:nowrap;">${fmtBytes(f.size)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  };
+
+  contentEl.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0 8px 0;">
+      <div style="font-size:11px;color:var(--text3);">Recent calls (newest first)</div>
+      <button onclick="clearPromptHistory()" style="font-size:10px;padding:3px 8px;background:var(--bg2,#1a1a1a);border:1px solid var(--border,#2a2a2a);color:var(--text3);cursor:pointer;border-radius:3px;">Clear</button>
+    </div>
+    ${_promptCompositionHistory.map(renderEntry).join('')}
+  `;
+}
+
+function clearPromptHistory() {
+  _promptCompositionHistory = [];
+  renderPromptStackTab();
+}
+
+function getPromptForAgent(agent, mode) {
+  if (agent === 'agent_builder' && mode && BUILDER_MODE_PROMPTS[mode]) {
+    const subKeys = BUILDER_MODE_PROMPTS[mode];
+    recordPromptComposition(agent, mode, ['agent_builder', ...subKeys]);
+    const parts = [prompts['agent_builder']];
+    for (const k of subKeys) parts.push(prompts[k] || '');
+    if (subKeys.length > 1) {
+      const slots = [...new Set(subKeys.map(k => MODE_SLOT[k]).filter(Boolean))];
+      if (slots.length > 0) parts.push(buildMergeFooter(slots));
+    }
+    return parts.join('\n\n');
+  }
+  if (agent === 'agent_interviewer' && mode && INTERVIEWER_MODE_PROMPTS[mode]) {
+    const subKeys = INTERVIEWER_MODE_PROMPTS[mode];
+    recordPromptComposition(agent, mode, ['agent_interviewer', ...subKeys]);
+    const parts = [prompts['agent_interviewer']];
+    for (const k of subKeys) parts.push(prompts[k] || '');
+    return parts.join('\n\n');
+  }
+  if (agent === 'agent_chat') {
+    const hasDocuments = pendingFiles.some(f => f.text);
+    const modeFiles = getChatModeFiles(hasDocuments);
+    const keys = ['agent_chat', ...modeFiles.filter(k => prompts[k])];
+    recordPromptComposition(agent, mode, keys);
+    return keys.map(k => prompts[k]).join('\n\n');
+  }
+  const fallback = prompts[agent] ? agent : 'agent_chat';
+  recordPromptComposition(agent, mode, [fallback]);
+  return prompts[fallback];
 }
