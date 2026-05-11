@@ -20,35 +20,43 @@ app.put('/api/prompts/file/:filename', (req, res) => {
     // Top-level agents live in prompts/agents/.
     // Structure-generator mode overlays live in prompts/modes/structure-generator/.
     const ALLOWED_PATHS = {
-      'agent-chat.md':        'agents/agent-chat.md',
-      'agent-builder.md':     'agents/agent-builder.md',
-      'agent-interviewer.md': 'agents/agent-interviewer.md',
-      // Builder modes
-      'modules.md':           'modes/builder/generate/modules.md',
-      'modules-features.md':  'modes/builder/generate/modules-features.md',
-      'pages.md':             'modes/builder/generate/pages.md',
-      'refine.md':            'modes/builder/edit/refine.md',
-      'resolve.md':           'modes/builder/edit/resolve.md',
-      'diff.md':              'modes/builder/compare/diff.md',
-      // Interviewer modes
-      'solve-open-points.md': 'modes/interviewer/solve-open-points.md',
-      'enrich-context.md':    'modes/interviewer/enrich-context.md',
-      // Chat rules
-      'intent-override.md':   'modes/chat/rules/intent-override.md',
-      'input-detection.md':   'modes/chat/rules/input-detection.md',
-      'confidence.md':        'modes/chat/rules/confidence.md',
-      'next-actions-tags.md': 'modes/chat/rules/next-actions-tags.md',
-      'command-routing.md':   'modes/chat/rules/command-routing.md',
-      // Chat templates
-      'chat-responses.md':    'modes/chat/templates/chat-responses.md',
-      // Chat actions
-      'analyze-document.md':  'modes/chat/actions/analyze-document.md',
-      'analyze-input.md':     'modes/chat/actions/analyze-input.md',
-      'answer.md':            'modes/chat/actions/answer.md',
-      'route.md':             'modes/chat/actions/route.md',
-      'add-input.md':         'modes/chat/actions/add-input.md',
-      'modify-input.md':      'modes/chat/actions/modify-input.md',
-      'clarify.md':           'modes/chat/actions/clarify.md',
+      // Top-level standalone agents (flat in /prompts)
+      'INTENT_ROUTER_AGENT.md':                       'INTENT_ROUTER_AGENT.md',
+      'ANSWER_AGENT.md':                              'ANSWER_AGENT.md',
+      'CLARIFY_AGENT.md':                             'CLARIFY_AGENT.md',
+      'QUERY_AGENT.md':                               'QUERY_AGENT.md',
+      'MUTATION_AGENT.md':                            'MUTATION_AGENT.md',
+      // ANALYZE composite
+      'ANALYZE_AGENT_PROMPT.md':                      'ANALYZE/ANALYZE_AGENT_PROMPT.md',
+      'ANALYZE_RULE_NEXT_ACTIONS_TAGS.md':            'ANALYZE/ANALYZE_RULE_NEXT_ACTIONS_TAGS.md',
+      'ANALYZE_RULE_PROJECT_CONTEXT.md':              'ANALYZE/ANALYZE_RULE_PROJECT_CONTEXT.md',
+      'ANALYZE_RULE_TARGET_KEYWORDS.md':              'ANALYZE/ANALYZE_RULE_TARGET_KEYWORDS.md',
+      'ANALYZE_RULE_POST_INSERT_ROUTING.md':          'ANALYZE/ANALYZE_RULE_POST_INSERT_ROUTING.md',
+      'ANALYZE_ACTION_ANALYZE_DOCUMENT.md':           'ANALYZE/ANALYZE_ACTION_ANALYZE_DOCUMENT.md',
+      'ANALYZE_ACTION_ANALYZE_INPUT.md':              'ANALYZE/ANALYZE_ACTION_ANALYZE_INPUT.md',
+      'ANALYZE_ACTION_ADD_INPUT.md':                  'ANALYZE/ANALYZE_ACTION_ADD_INPUT.md',
+      'ANALYZE_ACTION_MODIFY_INPUT.md':               'ANALYZE/ANALYZE_ACTION_MODIFY_INPUT.md',
+      'ANALYZE_ACTION_REMOVE_INPUT.md':               'ANALYZE/ANALYZE_ACTION_REMOVE_INPUT.md',
+      'ANALYZE_ACTION_EXTRACT_DETAILS.md':            'ANALYZE/ANALYZE_ACTION_EXTRACT_DETAILS.md',
+      // BUILDER composite
+      'BUILDER_AGENT_PROMPT.md':                      'BUILDER/BUILDER_AGENT_PROMPT.md',
+      'BUILDER_RULE_MODULE_NAMING.md':                'BUILDER/BUILDER_RULE_MODULE_NAMING.md',
+      'BUILDER_RULE_CONFIDENCE.md':                   'BUILDER/BUILDER_RULE_CONFIDENCE.md',
+      'BUILDER_RULE_SUMMARY_STYLE.md':                'BUILDER/BUILDER_RULE_SUMMARY_STYLE.md',
+      'BUILDER_RULE_RESOLVED_POINTS.md':              'BUILDER/BUILDER_RULE_RESOLVED_POINTS.md',
+      'BUILDER_RULE_GAPS.md':                         'BUILDER/BUILDER_RULE_GAPS.md',
+      'BUILDER_RULE_CONTEXT_ENRICHMENT.md':           'BUILDER/BUILDER_RULE_CONTEXT_ENRICHMENT.md',
+      'BUILDER_MODE_GENERATE_MODULES.md':             'BUILDER/BUILDER_MODE_GENERATE_MODULES.md',
+      'BUILDER_MODE_GENERATE_MODULES_FEATURES.md':    'BUILDER/BUILDER_MODE_GENERATE_MODULES_FEATURES.md',
+      'BUILDER_MODE_GENERATE_PAGES.md':               'BUILDER/BUILDER_MODE_GENERATE_PAGES.md',
+      'BUILDER_MODE_ADD_FEATURES.md':                 'BUILDER/BUILDER_MODE_ADD_FEATURES.md',
+      'BUILDER_MODE_ADD_SUBFEATURES.md':              'BUILDER/BUILDER_MODE_ADD_SUBFEATURES.md',
+      'BUILDER_MODE_RESOLVE.md':                      'BUILDER/BUILDER_MODE_RESOLVE.md',
+      'BUILDER_MODE_DIFF.md':                         'BUILDER/BUILDER_MODE_DIFF.md',
+      // INTERVIEW composite
+      'INTERVIEW_AGENT_PROMPT.md':                    'INTERVIEW/INTERVIEW_AGENT_PROMPT.md',
+      'INTERVIEW_MODE_SOLVE_OPEN_POINTS.md':          'INTERVIEW/INTERVIEW_MODE_SOLVE_OPEN_POINTS.md',
+      'INTERVIEW_MODE_ENRICH_CONTEXT.md':             'INTERVIEW/INTERVIEW_MODE_ENRICH_CONTEXT.md',
     };
     if (!ALLOWED_PATHS[filename]) {
       return res.status(400).json({ error: 'Unknown prompt file' });

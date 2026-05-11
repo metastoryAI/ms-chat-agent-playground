@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ms-chat-agent — Documentation</title>
+<style>
+  :root{
+    --bg:#f9f9f9;--bg2:#ffffff;--bg3:#f0f2f5;
+    --text:#1a1d23;--text2:#5a6378;--text3:#9ba3b5;
+    --accent:#3b6ef0;--green:#0f9b6a;--amber:#c47c0a;--purple:#6c4fd4;--teal:#0fa9c4;
+    --border:#e4e7ec;--border2:#cfd4de;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --mono:'JetBrains Mono','Fira Code',monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6;}
+  body{padding:40px 24px 120px;}
+  .doc{max-width:920px;margin:0 auto;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;padding-bottom:16px;border-bottom:1px solid var(--border);}
+  .topbar-title{font-size:13px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;}
+  .topbar a{font-size:13px;color:var(--accent);text-decoration:none;font-weight:500;}
+  .topbar a:hover{text-decoration:underline;}
+  h1{font-size:28px;font-weight:700;margin:0 0 8px;letter-spacing:-0.01em;}
+  .lede{font-size:15px;color:var(--text2);margin:0 0 36px;}
+  h2{font-size:19px;font-weight:700;margin:40px 0 14px;padding-top:28px;border-top:1px solid var(--border);letter-spacing:-0.005em;}
+  h2:first-of-type{border-top:none;padding-top:0;margin-top:0;}
+  h3{font-size:15px;font-weight:600;margin:24px 0 10px;color:var(--text);}
+  p{margin:0 0 14px;color:var(--text);}
+  a{color:var(--accent);}
+  code{font-family:var(--mono);font-size:13px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:1px 6px;color:var(--text);}
+  pre{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.7;color:var(--text2);overflow-x:auto;margin:0 0 18px;}
+  pre code{background:none;border:none;padding:0;font-size:inherit;color:inherit;}
+  ul,ol{margin:0 0 16px;padding-left:22px;}
+  li{margin-bottom:6px;}
+  table{width:100%;border-collapse:collapse;margin:0 0 20px;font-size:14px;}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;}
+  th{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;background:var(--bg3);}
+  td code{font-size:12.5px;}
+  hr{border:none;border-top:1px solid var(--border);margin:32px 0;}
+  .chip{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;margin-right:4px;}
+  .chip.tri{background:rgba(59,110,240,0.1);color:var(--accent);}
+  .chip.act{background:rgba(15,155,106,0.1);color:var(--green);}
+  .chip.sta{background:rgba(108,79,212,0.1);color:var(--purple);}
+  .callout{background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:6px;padding:12px 16px;margin:0 0 18px;color:var(--text2);font-size:14px;}
+  .toc{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:36px;}
+  .toc-title{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;}
+  .toc ol{margin:0;padding-left:20px;}
+  .toc li{margin-bottom:4px;font-size:14px;}
+  .toc a{text-decoration:none;color:var(--text2);}
+  .toc a:hover{color:var(--accent);}
+  .ascii{background:var(--bg2);border:1px dashed var(--border2);border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;color:var(--text2);overflow-x:auto;white-space:pre;margin:0 0 18px;}
+  .ol-reason li{margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="topbar">
+    <span class="topbar-title">ms-chat-agent · docs</span>
+    <a href="index.html">← Back to app</a>
+  </div>
+
+  <h1>ms-chat-agent — Documentation</h1>
+  <p class="lede">Playground for the Metastory AI chat agent system. Single-page app + thin Node server, all state in the browser.</p>
+
+  <div class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#frontend">Frontend</a></li>
+      <li><a href="#backend">Backend</a></li>
+      <li><a href="#database">Database</a></li>
+      <li><a href="#prompts">Prompts</a></li>
+      <li><a href="#state">State shape sent to the LLM</a></li>
+      <li><a href="#next">What we should do next</a></li>
+    </ol>
+  </div>
+
+  <h2 id="overview">1. Overview</h2>
+  <p>The app is a three-agent LLM system. Every user message goes through <code>agent_chat</code>, which decides what happens next:</p>
+  <div class="ascii">user input ─▶ agent_chat ─┬─▶ updates state (documents, inputs, summary)
+                          ├─▶ answers directly
+                          └─▶ routes to agent_builder / agent_interviewer</div>
+
+  <table>
+    <thead><tr><th>Agent</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>agent_chat</code></td><td>Entry point. Classifies input, updates state, routes to specialists.</td></tr>
+      <tr><td><code>agent_builder</code></td><td>Generates the app structure (pages, modules, features).</td></tr>
+      <tr><td><code>agent_interviewer</code></td><td>Solves open points, enriches project context.</td></tr>
+    </tbody>
+  </table>
+
+  <p>Each agent has <strong>modes</strong>. The frontend picks a mode based on what needs to happen (e.g. <code>generate/modules</code>, <code>compare/diff</code>, <code>edit/resolve</code>) and composes the system prompt from <code>agents/&lt;agent&gt;.md</code> + the mode sub-prompts.</p>
+  <p>Four LLM providers supported: <strong>Anthropic</strong>, <strong>OpenAI</strong>, <strong>Gemini</strong>, <strong>Kimi</strong>.</p>
+
+  <h2 id="frontend">2. Frontend (<code>public/</code>)</h2>
+  <p>Static SPA — no build step. <code>index.html</code> loads the JS modules in order.</p>
+  <table>
+    <thead><tr><th>File</th><th>Lines</th><th>Owns</th></tr></thead>
+    <tbody>
+      <tr><td><code>js/state.js</code></td><td>210</td><td>Global in-memory state (<code>state</code>), per-provider copies, <code>PROVIDER_MODELS</code> catalog.</td></tr>
+      <tr><td><code>js/language.js</code></td><td>158</td><td><code>project_language</code> detection and the startup language QA.</td></tr>
+      <tr><td><code>js/next-actions.js</code></td><td>234</td><td>Renders the next-actions button row attached to assistant messages.</td></tr>
+      <tr><td><code>js/prompts.js</code></td><td>429</td><td>Prompts modal. Loads <code>.md</code> files from <code>/prompts/*</code>, composes the system prompt per agent+mode, saves back via <code>PUT /api/prompts/file/:filename</code>.</td></tr>
+      <tr><td><code>js/ui.js</code></td><td>1752</td><td>Sidebars, state panel, debug panel, message rendering primitives.</td></tr>
+      <tr><td><code>js/qa.js</code></td><td>479</td><td>QA widget — used for resolve-assumptions and language startup.</td></tr>
+      <tr><td><code>js/llm.js</code></td><td>178</td><td><code>callAgent()</code>, <code>_callProvider()</code> per-provider fetch, <code>parseJSON()</code>, token tracking.</td></tr>
+      <tr><td><code>js/response-handler.js</code></td><td>2433</td><td>Dispatch LLM JSON → state mutations + UI (structure card, diff card, message).</td></tr>
+      <tr><td><code>js/chat.js</code></td><td>458</td><td>Send/receive lifecycle, file attachment handling, <code>buildPayload()</code>.</td></tr>
+      <tr><td><code>js/provider.js</code></td><td>147</td><td>Provider &amp; model selection, per-agent model overrides.</td></tr>
+      <tr><td><code>js/sidebar-resize.js</code></td><td>63</td><td>Left-nav resize handle.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>State ownership</h3>
+  <p>All state lives in the <code>state</code> object returned by <code>freshState()</code> (<code>state.js</code>). There is <strong>one state per provider</strong> — switching provider loads that provider's state.</p>
+  <p>Persistence is <code>localStorage</code> for:</p>
+  <ul>
+    <li>API keys (<code>ms_api_*</code>)</li>
+    <li>Selected model per provider (<code>ms_model_*</code>) and per agent (<code>ms_agent_model_*_*</code>)</li>
+  </ul>
+  <p>The project state itself (inputs, summary, context, structure) is <strong>not persisted</strong> — a full reload clears it.</p>
+
+  <h3>Request path</h3>
+  <div class="ascii">chat.js:sendMessage()
+  → buildPayload(text)                      # chat.js:447
+  → callAgent('agent_chat', payload)        # llm.js:137
+  → _callProvider(key, userMsg, ...)        # llm.js:46
+  → response-handler.js::handleResponse()   # dispatches on `action`</div>
+
+  <h2 id="backend">3. Backend (<code>server.js</code>)</h2>
+  <p>111 lines. Express. Three jobs only:</p>
+  <table>
+    <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /</code></td><td>Serves <code>public/index.html</code>.</td></tr>
+      <tr><td><code>GET /prompts/*</code></td><td>Static serve of the <code>prompts/</code> directory so the frontend can fetch <code>.md</code> files.</td></tr>
+      <tr><td><code>PUT /api/prompts/file/:filename</code></td><td>Writes edited prompt text back to disk. Filename is validated against a whitelist in <code>ALLOWED_PATHS</code>.</td></tr>
+      <tr><td><code>POST /openai</code></td><td>CORS proxy to <code>api.openai.com/v1/chat/completions</code>.</td></tr>
+      <tr><td><code>POST /kimi</code></td><td>CORS proxy to <code>api.moonshot.ai/v1/chat/completions</code>.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><strong>Anthropic and Gemini are called directly from the browser</strong> (they allow CORS / accept browser access), so the server is not involved in those calls. The API key goes over the wire from the browser.</div>
+  <p>No auth, no rate limiting, no request logging. This is a playground.</p>
+
+  <h2 id="database">4. Database (<code>metastory.db</code>)</h2>
+  <div class="callout">SQLite file committed to the repo. <strong>The schema exists but <code>server.js</code> never reads or writes it.</strong> Treat the DB as a parked design, not active infrastructure.</div>
+  <p>Schema (as-is):</p>
+  <table>
+    <thead><tr><th>Table</th><th>Purpose (intended)</th></tr></thead>
+    <tbody>
+      <tr><td><code>projects</code></td><td><code>id</code>, <code>name</code>, <code>created_at</code></td></tr>
+      <tr><td><code>project_messages</code></td><td>Chat history — <code>role</code>, <code>content</code>, <code>action</code></td></tr>
+      <tr><td><code>project_documents</code></td><td>Uploaded docs — <code>name</code>, <code>original_summary</code>, <code>source</code></td></tr>
+      <tr><td><code>project_manual_inputs</code></td><td>Manually captured <code>topic</code> + <code>detail</code></td></tr>
+      <tr><td><code>project_free_inputs</code></td><td>Free-form note summaries</td></tr>
+      <tr><td><code>project_summary</code></td><td>The combined <code>project_summary</code> text per project</td></tr>
+      <tr><td><code>project_context</code></td><td><code>summary</code>, <code>confidence</code>, <code>entities</code> / <code>covered</code> / <code>gaps</code> (JSON)</td></tr>
+      <tr><td><code>project_structure</code></td><td><code>pages</code> (JSON), <code>modules</code> (JSON), <code>inserted_at</code></td></tr>
+      <tr><td><code>prompts</code></td><td>Prompt text keyed by <code>key</code></td></tr>
+    </tbody>
+  </table>
+  <p>If we want persistence, this schema maps cleanly to the current in-memory <code>state</code> shape — mostly a serialize-on-change job.</p>
+
+  <h2 id="prompts">5. Prompts (<code>prompts/</code>)</h2>
+  <p>Prompts are <strong>files on disk</strong>, loaded by the frontend at runtime.</p>
+  <div class="ascii">prompts/                                    # root of all prompts
+├── agents/                                 #   ├── top-level system prompt per agent
+│   ├── agent-chat.md                       #     ├── entry point; classifies input &amp; routes
+│   ├── agent-builder.md                    #     ├── generates the app structure
+│   └── agent-interviewer.md                #     └── solves open points, enriches context
+└── modes/                                  #   └── mode-specific sub-prompts per agent
+    ├── chat/                               #     ├── sub-prompts for agent-chat
+    │   ├── actions/                        #       ├── one file per chat action
+    │   │   ├── add-input.md                #         ├── new manual input captured
+    │   │   ├── analyze-document.md         #         ├── PDF/file uploaded → extract summary &amp; topics
+    │   │   ├── analyze-input.md            #         ├── free text describes project → extract summary
+    │   │   ├── answer.md                   #         ├── direct reply, no state change
+    │   │   ├── clarify.md                  #         ├── ask user something before acting
+    │   │   ├── extract-open-points.md      #         ├── find unresolved decisions in input
+    │   │   ├── modify-input.md             #         ├── correction to an existing input
+    │   │   ├── remove-input.md             #         ├── delete a previously captured input
+    │   │   └── route.md                    #         └── hand off to builder or interviewer
+    │   ├── rules/                          #       ├── always-applied rules for agent-chat
+    │   │   ├── command-routing.md          #         ├── how to recognize explicit user commands
+    │   │   ├── input-detection.md          #         ├── classify message (document, text, question)
+    │   │   ├── next-actions-tags.md        #         ├── which suggested-action buttons to emit
+    │   │   └── project-context.md          #         └── maintaining project_context shape
+    │   └── templates/                      #       └── shared phrasing scaffolds
+    │       └── chat-responses.md           #         └── canned phrasings for chat_response field
+    ├── builder/                            #     ├── sub-prompts for agent-builder
+    │   ├── generate/                       #       ├── first-time structure generation
+    │   │   ├── modules.md                  #         ├── pages + grouped modules (no features)
+    │   │   ├── modules-features.md         #         ├── pages + modules + features per module
+    │   │   └── pages.md                    #         └── documentary pages (summary, SWOT, etc.)
+    │   ├── compare/                        #       ├── incremental diff vs existing tree
+    │   │   └── diff.md                     #         └── new inputs → updated/new modules only
+    │   ├── edit/                           #       ├── post-generation edits
+    │   │   └── resolve.md                  #         └── Q&amp;A to resolve open assumptions
+    │   └── rules/                          #       └── always-applied rules for agent-builder
+    │       ├── confidence.md               #         ├── how to score project_context.confidence
+    │       ├── context-enrichment.md       #         ├── how to fill project_context on generation
+    │       ├── gaps.md                     #         ├── identifying coverage gaps in input
+    │       └── module-grouping.md          #         └── how to group modules into sections
+    └── interviewer/                        #     └── sub-prompts for agent-interviewer
+        ├── enrich-context.md               #       ├── ask questions to fill context gaps
+        └── solve-open-points.md            #       └── turn open_points into answerable questions</div>
+
+  <h3>How the system prompt is composed</h3>
+  <p><code>prompts.js::getPromptForAgent(agentKey, mode)</code> builds the system prompt by concatenating:</p>
+  <ol>
+    <li><code>agents/agent-&lt;name&gt;.md</code> (always)</li>
+    <li>The mode-specific sub-prompt (if a <code>mode</code> is present in the payload)</li>
+    <li>Rule files that always apply for that agent</li>
+  </ol>
+  <p>The composed text is passed as <code>system</code> to every provider except Gemini, which takes it as <code>system_instruction</code>.</p>
+
+  <h3>Editing prompts</h3>
+  <p>The Prompts modal (button in the chat panel) writes edits back through <code>PUT /api/prompts/file/:filename</code>. Only filenames in <code>server.js::ALLOWED_PATHS</code> are accepted. Changes take effect on the <strong>next</strong> LLM call — no reload needed.</p>
+
+  <h2 id="state">6. State shape sent to the LLM</h2>
+  <p><code>chat.js::buildPayload()</code> constructs this JSON on every call, then <code>llm.js::_callProvider()</code> serializes it as the user message:</p>
+<pre><code>{
+  "inputs":             [/* { id, source, text|topic|detail, … } */],
+  "project_summary":    "combined text of all docs + inputs",
+  "project_context":    { "summary", "confidence", "entities", "covered", "gaps" },
+  "existing_structure": { "pages": [], "sections": [], "modules": [], "inserted_at": "…" },
+  "captured_topics":    [/* topics locked in from first analyze_* */],
+  "open_points":        [/* unresolved decisions */],
+  "project_notes":      [/* PM / planning items */],
+  "user_input":         "what the user typed",
+  "project_language":   "en" // or null before the startup QA
+}</code></pre>
+  <p>Attached documents are prepended to the user message as <code>[DOCUMENT: filename]\n\n&lt;text&gt;</code> blocks (pdf.js extracts text client-side — PDFs are <strong>never</strong> sent as binary).</p>
+
+  <h2 id="next">7. What we should do next</h2>
+  <p>Prioritized from highest leverage first. Each item is one decision, not a design.</p>
+  <ol class="ol-reason">
+    <li><strong>Decide the DB question.</strong> Either wire <code>server.js</code> to <code>metastory.db</code> so state survives reloads (the schema already matches), or delete the DB file + WAL and stop shipping dead weight. Right now it's neither.</li>
+    <li><strong>Agent Inspector.</strong> Replace the removed Guide modal with a live panel showing <code>{agent, mode, prompt files, payload}</code> for the last N LLM calls. 10-line hook in <code>llm.js::_callProvider</code> + a subscriber. This is the single most useful dev tool given how much agent routing the app does.</li>
+    <li><strong>Lift the frontend API keys out of localStorage.</strong> Anthropic and Gemini run direct-from-browser with the key in plain <code>localStorage</code>. Fine for a solo playground, not for anything shared. Move those calls behind a server proxy like <code>/openai</code> and <code>/kimi</code> already do.</li>
+    <li><strong>Extract <code>response-handler.js</code>.</strong> 2433 lines in one file. Split per action (<code>analyze-document.js</code>, <code>route.js</code>, <code>structure.js</code>, <code>diff.js</code>) — it's the hottest file to touch and the hardest to navigate.</li>
+    <li><strong>Write integration tests for the agent flow.</strong> The prompts evolve constantly; there is no regression safety net. Minimum: a fixture runner that replays canned user inputs through <code>callAgent</code> against a mock provider and asserts the state mutations.</li>
+    <li><strong><code>SUMMARY STYLE</code> coverage.</strong> The sentence-role rule is in the five builder/diff prompts. Port it to the chat <code>actions/*</code> and interviewer prompts so summaries are consistent everywhere.</li>
+    <li><strong>Package the prompts.</strong> Right now the frontend hardcodes which files belong to which agent in <code>prompts.js</code>. If we introduce a <code>prompts/manifest.json</code> describing <code>{agent → mode → files[]}</code>, item 2 gets cheaper and the server whitelist in <code>ALLOWED_PATHS</code> can be generated from the same source.</li>
+  </ol>
+
+</div>
+</body>
+</html>

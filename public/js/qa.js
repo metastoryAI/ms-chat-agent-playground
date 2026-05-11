@@ -4,8 +4,7 @@ let _cbQuestions    = [];
 let _cbCurrentIdx   = 0;
 let _cbBatchAnswers = [];
 let _cbResolveMode       = false; // routes submitCBBatch to submitResolvedAssumptions
-let _cbEnrichMode        = false; // last question is the enrich topics picker
-let _cbEnrichContextMode = false; // routes submitCBBatch to submitEnrichContext
+let _cbEnrichContextMode = false; // sequential enrich flow — one question per LLM call
 let _cbEnrichContextSource = 'chat'; // 'chat' or 'builder'
 let _cbLanguageMode      = false; // startup single-select language picker
 function setEnrichContextSource(src) { _cbEnrichContextSource = src; }
@@ -41,9 +40,6 @@ function renderCBQuestion() {
   const q       = _cbQuestions[_cbCurrentIdx];
   const widget  = document.getElementById('cb-widget');
   const isMulti = q.type === 'multi_select' || q.type === 'multiple_select';
-  const isLast  = _cbCurrentIdx >= _cbQuestions.length - 1;
-  const isEnrich = q.id === 'enrich_topics';
-  const totalRows = q.options.length; // action rows added after options
 
   const modeLabel = _cbEnrichContextMode ? 'DISCOVERY' : _cbResolveMode ? 'RESOLVE' : '';
   const closeHandler = _cbEnrichContextMode ? 'enrichContextClose()' : 'exitContextBuilder()';
@@ -51,7 +47,9 @@ function renderCBQuestion() {
   let html = `<div class="cb-question" data-question-id="${escHtml(q.id)}" data-type="${q.type}">`;
 
   // Header: question + breadcrumb + tag + X
-  const breadcrumb = _cbQuestions.length > 1 ? `<span class="cb-breadcrumb">${_cbCurrentIdx + 1} of ${_cbQuestions.length}</span>` : '';
+  const breadcrumb = (q.total_questions && q.total_questions > 1)
+    ? `<span class="cb-breadcrumb">${q.question_index} of ${q.total_questions}</span>`
+    : (_cbQuestions.length > 1 ? `<span class="cb-breadcrumb">${_cbCurrentIdx + 1} of ${_cbQuestions.length}</span>` : '');
   html += `<div class="cb-header-row">
     <span class="cb-question-text">${escHtml(q.text)}</span>
     <div class="cb-header-right">
@@ -74,36 +72,46 @@ function renderCBQuestion() {
     idx++;
   });
 
-  // Always add free text input row
-  const check = isMulti ? `<span class="cb-opt-check"></span>` : '';
+  // Always add free text input row — with numeric counter (single-select) or checkbox (multi-select)
+  const check = isMulti ? `<span class="cb-opt-check"></span>` : `<span class="cb-opt-num">${idx + 1}</span>`;
   html += `<div class="cb-opt-row cb-opt-something" data-idx="${idx}" data-value="something_else" onclick="cbFocusSomethingElse(this)">
-    ${check}<input type="text" class="cb-something-inline" placeholder="Something else..." oninput="cbOnSomethingInput(this, ${isMulti})">
+    ${check}<input type="text" class="cb-something-inline" placeholder="Enter custom answer..." oninput="cbOnSomethingInput(this, ${isMulti})">
     <span class="cb-opt-enter">${_enterSvg}</span>
   </div>`;
   idx++;
 
-  // Action rows: Skip + Continue side by side
-  html += `<div class="cb-action-pair">`;
-  if (isEnrich) {
-    html += `<div class="cb-opt-row cb-opt-action" data-idx="${idx}" data-action="skip" onclick="skipEnrich()">
-      <span class="cb-opt-label cb-opt-right">Skip</span><span class="cb-opt-enter">${_enterSvg}</span>
-    </div>`;
-    idx++;
-    html += `<div class="cb-opt-row cb-opt-action cb-opt-action-primary" data-idx="${idx}" data-action="continue" id="cb-continue-btn" onclick="continueEnrich()">
-      <span class="cb-opt-label cb-opt-right">Continue →</span><span class="cb-opt-enter">${_enterSvg}</span>
-    </div>`;
-  } else {
-    html += `<div class="cb-opt-row cb-opt-action" data-idx="${idx}" data-action="skip" onclick="cbSkipQuestion()">
-      <span class="cb-opt-label cb-opt-right">Skip</span><span class="cb-opt-enter">${_enterSvg}</span>
-    </div>`;
-    idx++;
+  // Action rows: Skip first, then Continue (multi-select only — single-select auto-advances).
+  // Styled like regular option rows, with an icon in the marker slot.
+  const skipIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>`;
+  const continueIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+  const submitIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  html += `<div class="cb-opt-row cb-opt-action" data-idx="${idx}" data-action="skip" onclick="cbSkipQuestion()">
+    <span class="cb-opt-marker cb-opt-icon">${skipIcon}</span><span class="cb-opt-label">Skip</span><span class="cb-opt-enter">${_enterSvg}</span>
+  </div>`;
+  idx++;
+  if (isMulti) {
+    const isLastQuestion = _cbCurrentIdx >= _cbQuestions.length - 1;
+    const primaryIcon  = isLastQuestion ? submitIcon : continueIcon;
+    const primaryLabel = isLastQuestion ? 'Submit'   : 'Continue';
     html += `<div class="cb-opt-row cb-opt-action cb-opt-action-primary" data-idx="${idx}" data-action="next" onclick="advanceCBQuestion()">
-      <span class="cb-opt-label cb-opt-right">Continue →</span><span class="cb-opt-enter">${_enterSvg}</span>
+      <span class="cb-opt-marker cb-opt-icon">${primaryIcon}</span><span class="cb-opt-label">${primaryLabel}</span><span class="cb-opt-enter">${_enterSvg}</span>
     </div>`;
+    idx++;
   }
-  html += `</div>`;
 
-  html += `</div></div>`;
+  html += `</div>`; // close .cb-options
+
+  // Footer: keyboard hints (styled like the chat next-actions footer).
+  const hasNav = _cbQuestions.length > 1;
+  html += `<div class="cb-footer">
+    <span class="cb-footer-left"><kbd>esc</kbd> to close</span>
+    <span class="cb-footer-right">
+      <span class="cb-footer-hint"><kbd>↑</kbd><kbd>↓</kbd> move</span>
+      ${hasNav ? `<span class="cb-footer-hint"><kbd>←</kbd><kbd>→</kbd> previous / next</span>` : ''}
+    </span>
+  </div>`;
+
+  html += `</div>`; // close .cb-question
   widget.innerHTML = html;
   _cbActiveOptIdx = -1;
 
@@ -210,6 +218,11 @@ function onCBKeyDown(e) {
   // Arrow Left — prev question (only if not on first)
   if (e.key === 'ArrowLeft' && _cbCurrentIdx > 0) {
     e.preventDefault();
+    // Persist current selection (if any) so returning to this question later
+    // shows what the user had selected. Don't force Skipped — the user is just reviewing.
+    const qEl = document.querySelector('.cb-question');
+    const entry = collectQuestionAnswer(qEl);
+    if (entry) _cbBatchAnswers[_cbCurrentIdx] = entry;
     _cbCurrentIdx--;
     renderCBQuestion();
     return;
@@ -281,73 +294,8 @@ function onCBKeyDown(e) {
   }
 }
 
-// ── Option change handler — enables Continue on enrich question ───────────────
-function onCBOptionChange() {
-  const continueBtn = document.getElementById('cb-continue-btn');
-  if (!continueBtn) return;
-  const anySelected = document.querySelectorAll('.cb-opt-row.cb-opt-selected').length > 0;
-  continueBtn.disabled = !anySelected;
-}
-
-// ── Skip enrich — go straight to regenerate ───────────────────────────────────
-function skipEnrich() {
-  // No enrich topics selected — just submit what we have
-  submitCBBatch();
-}
-
-// ── Continue enrich — collect selected topics, generate follow-up questions ───
-async function continueEnrich() {
-  const qEl = document.querySelector('.cb-question');
-  const entry = collectQuestionAnswer(qEl);
-
-  // Store enrich answer
-  if (entry) _cbBatchAnswers.push(entry);
-
-  // Get selected topic IDs
-  const selectedIds = Array.from(
-      document.querySelectorAll('.cb-question input[type=checkbox]:checked')
-  ).map(inp => inp.value);
-
-  if (selectedIds.length === 0) {
-    submitCBBatch();
-    return;
-  }
-
-  // Show loading
-  const widget = document.getElementById('cb-widget');
-  widget.innerHTML = `<div class="cb-loading">Generating follow-up questions...</div>`;
-
-  // Generate enrich questions via LLM
-  try {
-    const payload = {
-      to_agent:        'agent_interviewer',
-      mode:            'enrich_context',
-      enrich_topics:   selectedIds,
-      project_summary: state.project_summary,
-      project_context: state.project_context,
-      existing_structure: state.existing_structure,
-    };
-
-    const response = await callAgent('agent_interviewer', payload, { showLoading: false });
-
-    if (response.status === 'enrich_questions_ready' && response.enrich_questions?.length > 0) {
-      // Inject enrich questions into the current flow
-      const remaining = _cbQuestions.slice(_cbCurrentIdx + 1);
-      _cbQuestions = [
-        ..._cbQuestions.slice(0, _cbCurrentIdx + 1),
-        ...response.enrich_questions,
-        ...remaining
-      ];
-      _cbCurrentIdx++;
-      renderCBQuestion();
-    } else {
-      submitCBBatch();
-    }
-  } catch (err) {
-    if (err.name !== 'AbortError') addErrorMessage(err.message);
-    submitCBBatch();
-  }
-}
+// ── Option change handler (kept as no-op — multi-select toggle visuals only) ──
+function onCBOptionChange() {}
 
 // ── Collect & advance ─────────────────────────────────────────────────────────
 function advanceCBQuestion() {
@@ -428,7 +376,6 @@ async function submitCBBatch() {
 
   if (_cbResolveMode) {
     _cbResolveMode       = false;
-    _cbEnrichMode        = false;
     _resolveQuestions    = _cbQuestions.slice();
     _resolveBatchAnswers = _cbBatchAnswers.slice();
     _cbBatchAnswers      = [];
@@ -441,7 +388,6 @@ async function submitCBBatch() {
   if (_cbEnrichContextMode) {
     const answers = _cbBatchAnswers.slice();
     _cbEnrichContextMode = false;
-    _cbEnrichMode        = false;
     _cbBatchAnswers      = [];
     document.getElementById('cb-widget').style.display       = 'none';
     document.getElementById('chat-input-area').style.display = 'contents';
@@ -458,31 +404,32 @@ async function submitCBBatch() {
 // ── Submit Enrich Context answers ─────────────────────────────────────────────
 async function submitEnrichContext(answers, status) {
   if (status === 'discard') {
-    await window.handleAgentResponse('agent_interviewer', { status: 'discard' });
+    await window.handleAgentResponse('interview', { status: 'discard' });
     return;
   }
   // If no answers and closing — handle locally without LLM
   if (answers.length === 0) {
-    await window.handleAgentResponse('agent_interviewer', { status: 'discard' });
+    await window.handleAgentResponse('interview', { status: 'discard' });
     return;
   }
 
   const loadingEl = addLoading();
   try {
-    const payload = {
-      to_agent:        'agent_interviewer',
-      mode:            'enrich_context',
-      status:          status,
-      answers:         answers,
-      platform_type:   state.project_context?.platform_type || null,
-      project_summary: state.project_summary,
-      project_context: state.project_context,
-      captured_topics: state._capturedTopics || [],
-    };
+    // INTERVIEW enrich_context phase=answers — feed the user's selections back
+    // so the agent emits enrich_inputs[]. captured_topics now travel nested in
+    // inputs[*].captured_topics per the new prompt spec.
+    const payload = payloadForInterview({
+      mode:    'enrich_context',
+      phase:   'answers',
+      answers: answers,
+    });
+    // Submit status (start | discard | …) is a side-slot the agent reads when
+    // present; not declared in the prompt INPUT spec but harmless to include.
+    if (status) payload.status = status;
 
-    const response = await callAgent('agent_interviewer', payload, { showLoading: false });
+    const response = await callAgent('interview', payload, { showLoading: false });
     removeLoading(loadingEl);
-    await window.handleAgentResponse('agent_interviewer', response);
+    await window.handleAgentResponse('interview', response);
   } catch (err) {
     removeLoading(loadingEl);
     if (err.name !== 'AbortError') addErrorMessage(err.message);
@@ -494,7 +441,6 @@ function exitContextBuilder() {
   _cbQuestions           = [];
   _cbBatchAnswers        = [];
   _cbResolveMode         = false;
-  _cbEnrichMode          = false;
   _cbEnrichContextMode   = false;
   _cbEnrichContextSource = 'chat';
   _cbLanguageMode        = false;
@@ -514,7 +460,6 @@ function exitContextBuilder() {
 async function enrichContextBackToChat() {
   const answers = _cbBatchAnswers.slice();
   _cbEnrichContextMode   = false;
-  _cbEnrichMode          = false;
   _cbEnrichContextSource = 'chat';
   _cbBatchAnswers        = [];
   document.getElementById('cb-widget').style.display       = 'none';

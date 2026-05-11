@@ -5,6 +5,61 @@ function disablePreviousStructureCards() {
   removeAllNextActions();
 }
 
+// Module color palette — assigned by frontend (deterministic, token-free).
+// Order matches the CSS variables in styles.css.
+const MODULE_COLORS = [
+  'palette-purple-light',
+  'palette-blue-light',
+  'palette-green-light',
+  'palette-teal-light',
+  'palette-yellow-light',
+  'palette-red-light',
+  'palette-grey-light',
+  'palette-purple-dark',
+  'palette-blue-dark',
+  'palette-green-dark',
+  'palette-teal-dark',
+  'palette-yellow-dark',
+  'palette-red-dark',
+  'palette-grey-dark',
+];
+
+// Assign sequential colors to all modules across sections.
+// Preserves colors of modules that already existed in `existingStructure` (by id),
+// assigns the next unused index to new modules. Pages do not get a color.
+function assignModuleColors(sections, flatModules, existingStructure) {
+  const existingColors = new Map();
+  if (existingStructure) {
+    const prevMods = [
+      ...(existingStructure.sections?.flatMap(s => s.modules || []) || []),
+      ...(existingStructure.modules || []),
+    ];
+    for (const m of prevMods) {
+      if (m?.id && m.color) existingColors.set(m.id, m.color);
+    }
+  }
+
+  let maxUsedIndex = -1;
+  existingColors.forEach(c => {
+    const idx = MODULE_COLORS.indexOf(c);
+    if (idx > maxUsedIndex) maxUsedIndex = idx;
+  });
+  let nextIndex = maxUsedIndex + 1;
+
+  const assign = (m) => {
+    if (!m) return;
+    if (m.id && existingColors.has(m.id)) {
+      m.color = existingColors.get(m.id);
+    } else {
+      m.color = MODULE_COLORS[nextIndex % MODULE_COLORS.length];
+      nextIndex++;
+    }
+  };
+
+  (sections || []).forEach(sec => (sec.modules || []).forEach(assign));
+  (flatModules || []).forEach(assign);
+}
+
 // Converts "palette-blue-light" → CSS variable value via computed style
 function paletteColor(key) {
   if (!key) return 'transparent';
@@ -89,12 +144,34 @@ function mergeTopics(existing, incoming) {
 
 async function handleResponse(r, userText) {
 
+  // ── Hoist inputs[*].X lists to top-level for the existing flat-state code.
+  // The new prompt envelope nests captured_topics / decisions / open_points /
+  // project_notes / entities inside each inputs[] entry. Aggregate across
+  // entries when the top-level slot is empty, so legacy parsing keeps working.
+  if (Array.isArray(r?.inputs) && r.inputs.length > 0) {
+    const _aggField = (field) => {
+      const out = [];
+      for (const entry of r.inputs) {
+        if (Array.isArray(entry?.[field])) out.push(...entry[field]);
+      }
+      return out;
+    };
+    for (const f of ['captured_topics', 'decisions', 'open_points', 'project_notes', 'entities']) {
+      if (!Array.isArray(r[f]) || r[f].length === 0) {
+        const agg = _aggField(f);
+        if (agg.length) r[f] = agg;
+      }
+    }
+  }
+
   // ── Language change — replace lists instead of merging ─────────────────
   const _isLanguageChange = typeof userText === 'string' && userText.startsWith('Language changed to');
   if (_isLanguageChange) {
     state._capturedTopics = [];
-    state._openPoints = [];
-    state._projectNotes = [];
+    state._openPoints     = [];
+    state._projectNotes   = [];
+    state._decisions      = [];
+    state._entities       = [];
   }
 
   // ── NEW/UPDATED tags (ephemeral — rebuilt every turn so tags fade) ───────
@@ -109,6 +186,8 @@ async function handleResponse(r, userText) {
   state._capturedTopics = _stripStatus(state._capturedTopics);
   state._openPoints     = _stripStatus(state._openPoints);
   state._projectNotes   = _stripStatus(state._projectNotes);
+  state._decisions      = _stripStatus(state._decisions);
+  state._entities       = _stripStatus(state._entities);
 
   state._topicTags = {};
   const _collectTags = (arr) => {
@@ -166,12 +245,16 @@ async function handleResponse(r, userText) {
     }
   }
 
-  if (r.action === 'analyze_input' && r.input) {
-    const fi = { ...r.input, source: 'text', id: `fi_${Date.now()}`, added_at: new Date().toISOString() };
-    state.inputs.push(fi);
-    applyProjectSummary(r);
-    if (r.captured_topics?.length) {
-      state._capturedTopics = mergeTopics(state._capturedTopics || [], r.captured_topics);
+  if (r.action === 'analyze_input') {
+    // New ANALYZE prompt emits `inputs[]` (array, size 1). Legacy shape was `input` (singular).
+    const fiInput = r.input || (Array.isArray(r.inputs) ? r.inputs[0] : null);
+    if (fiInput) {
+      const fi = { ...fiInput, source: 'text', id: `fi_${Date.now()}`, added_at: new Date().toISOString() };
+      state.inputs.push(fi);
+      applyProjectSummary(r);
+      if (r.captured_topics?.length) {
+        state._capturedTopics = mergeTopics(state._capturedTopics || [], r.captured_topics);
+      }
     }
   }
 
@@ -188,33 +271,60 @@ async function handleResponse(r, userText) {
     };
   }
 
-  // Unified add/modify/remove — `r.target` picks the list:
-  // "input" (default) | "captured_topic" | "open_point" | "project_note"
+  // ADD_INPUT — the new ANALYZE_ACTION_ADD_INPUT prompt always emits exactly
+  // ONE new entry in `inputs[]`, with the relevant nested list populated
+  // (chosen by `target`). The shape is identical regardless of target:
+  //   target=input          → captured_topics filled
+  //   target=captured_topic → captured_topics filled
+  //   target=decision       → decisions filled
+  //   target=open_point     → open_points filled
+  //   target=project_note   → project_notes filled
+  //   target=entity         → entities filled
+  // So we run ONE merge path for any target — the hoister already lifted
+  // inputs[0].X to top-level r.X, and we just fan that out to the flat state.
   if (r.action === 'add_input') {
-    const target = r.target || 'input';
-    if (target === 'open_point' && r.new_item) {
-      const item = { title: String(r.new_item.title || '').trim(), summary: String(r.new_item.summary || '').trim() };
-      if (item.title) {
-        state._openPoints = [...(state._openPoints || []), item];
-        state._topicTags[item.title.toLowerCase()] = 'NEW';
-      }
-    } else if (target === 'project_note' && r.new_item) {
-      const item = { title: String(r.new_item.title || '').trim(), summary: String(r.new_item.summary || '').trim() };
-      if (item.title) {
-        state._projectNotes = [...(state._projectNotes || []), item];
-        state._topicTags[item.title.toLowerCase()] = 'NEW';
-      }
-    } else if (target === 'input' && r.input) {
+    const miInput = r.input || (Array.isArray(r.inputs) ? r.inputs[0] : null);
+    if (miInput) {
       const miId = `mi_${Date.now()}`;
-      const mi = { ...r.input, source: 'additional', id: miId, added_at: new Date().toISOString() };
+      const mi = { ...miInput, source: 'additional', id: miId, added_at: new Date().toISOString() };
       state.inputs.push(mi);
       applyProjectSummary(r);
+
+      // Tag each merged item with the new input's id as `source`. Without this
+      // the right-rail Doc-tab filter hides the item (an unsourced item is
+      // treated as "not in this document"), and the user only sees it after
+      // manually switching to the Additions tab.
+      const _tagWithSource = (list) => (list || []).map(t => (
+        typeof t === 'object' && t !== null && !t.source ? { ...t, source: miId } : t
+      ));
+
       if (r.captured_topics?.length) {
-        state._capturedTopics = mergeTopics(state._capturedTopics || [], r.captured_topics);
-      } else if (r.input?.topic) {
-        const fallback = { title: r.input.topic, summary: String(r.input.detail || '').split(' ').slice(0, 8).join(' ') };
+        state._capturedTopics = mergeTopics(state._capturedTopics || [], _tagWithSource(r.captured_topics));
+      } else if (miInput.topic) {
+        // Legacy r.input shape (singular, no nested captured_topics) — synthesize a topic
+        const fallback = { title: miInput.topic, summary: String(miInput.detail || '').split(' ').slice(0, 8).join(' '), source: miId };
         state._capturedTopics = mergeTopics(state._capturedTopics || [], [fallback]);
       }
+      if (r.decisions?.length)     state._decisions    = mergeTopics(state._decisions    || [], _tagWithSource(r.decisions));
+      if (r.open_points?.length)   state._openPoints   = mergeTopics(state._openPoints   || [], _tagWithSource(r.open_points));
+      if (r.project_notes?.length) state._projectNotes = mergeTopics(state._projectNotes || [], _tagWithSource(r.project_notes));
+      if (r.entities?.length)      state._entities     = [...(state._entities || []), ..._tagWithSource(r.entities)];
+
+      // Mark every freshly added item as NEW so the badge shows next to its title.
+      const _markNew = (list) => (list || []).forEach(t => {
+        const key = String(typeof t === 'object' ? (t.title || t.name) : t || '').toLowerCase();
+        if (key) state._topicTags[key] = 'NEW';
+      });
+      _markNew(r.captured_topics);
+      _markNew(r.decisions);
+      _markNew(r.open_points);
+      _markNew(r.project_notes);
+      _markNew(r.entities);
+
+      // Switch the right-rail to the Additions tab so the user sees the new
+      // content immediately. The badge stays until the user clicks any tab.
+      state._activeContextDoc = '__added__';
+      state._addedTabHasNew   = true;
     }
   }
 
@@ -283,21 +393,48 @@ async function handleResponse(r, userText) {
 
   // ── Chat response + next actions ──────────────────────────────────────────
 
-  // Store open_points from chat agent — dedup by title
-  if (r.open_points !== undefined) {
+  // Helper: merge two lists of `{ title, summary }` objects by lowercased title
+  const _dedupeMerge = (existing, incoming) => {
     const normalize = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     const getKey = (p) => normalize(typeof p === 'object' ? (p.title || '') : p);
-    const existing = state._openPoints || [];
-    const incoming = r.open_points || [];
     const seen = new Set();
     const merged = [];
-    for (const p of [...existing, ...incoming]) {
+    for (const p of [...(existing || []), ...(incoming || [])]) {
       const k = getKey(p);
       if (!k || seen.has(k)) continue;
       seen.add(k);
       merged.push(p);
     }
-    state._openPoints = merged;
+    return merged;
+  };
+
+  // Apply echoed derived lists from the chat agent.
+  // For remove_input, the action branch already did the explicit removal —
+  // skip the merge here to avoid re-adding items via the LLM's echoed list.
+  if (r.open_points !== undefined && r.action !== 'remove_input') {
+    state._openPoints = _dedupeMerge(state._openPoints, r.open_points);
+  }
+  if (r.project_notes !== undefined && r.action !== 'remove_input') {
+    state._projectNotes = _dedupeMerge(state._projectNotes, r.project_notes);
+  }
+  // Decisions: keyed by `title`; same dedupe contract as open_points.
+  if (r.decisions !== undefined && r.action !== 'remove_input') {
+    state._decisions = _dedupeMerge(state._decisions, r.decisions);
+  }
+  // Entities: dedupeMerge keys off `title`; entities use `name` instead.
+  // Pre-map name → title for the dedupe pass, then strip the synthetic title back.
+  if (r.entities !== undefined && r.action !== 'remove_input') {
+    const _withTitle = (arr) => (arr || []).map(e => (
+      e && typeof e === 'object' && e.name && !e.title ? { ...e, title: e.name } : e
+    ));
+    const merged = _dedupeMerge(_withTitle(state._entities), _withTitle(r.entities));
+    state._entities = merged.map(e => {
+      if (e && typeof e === 'object' && e.name && e.title === e.name) {
+        const { title, ...rest } = e;
+        return rest;
+      }
+      return e;
+    });
   }
 
   // Store project_context from chat agent (confidence, platform_type, market_type)
@@ -316,16 +453,30 @@ async function handleResponse(r, userText) {
 
   const _hasChat = r.chat_response && (typeof r.chat_response === 'string' ? r.chat_response : r.chat_response.text);
   if (_hasChat) {
-    let nextActions = resolveNextActions(r.next_actions);
+    // Override: once a structure is inserted, REFINE is the source of
+    // truth for next-actions — regardless of whatever GENERATE/etc. tag the chat
+    // agent returned (it doesn't know about the inserted tree). /regenerate
+    // appears automatically inside REFINE when new input was added
+    // after inserted_at.
+    let nextActions;
+    if (state.existing_structure?.inserted === true && r.action !== 'answer') {
+      nextActions = resolveNextActions(buildBuilderInsertedTag());
+    } else {
+      nextActions = resolveNextActions(r.next_actions);
+    }
 
-    // `answer` action always hides the next-actions bar — the hint points the user to `/`.
-    // Force null even if the LLM disobeyed the prompt and returned a tag anyway.
+    // `answer` action normally hides the next-actions bar — the hint points the user to `/`.
+    // EXCEPTION: onboarding variant (no inputs yet). Show the EMPTY NA so the user
+    // can directly click "Upload Document" / "Describe Your Project".
     if (r.action === 'answer') {
-      nextActions = null;
+      const hasInputs = (state.inputs || []).some(i => i.source === 'document' || i.source === 'text');
+      nextActions = (!hasInputs && !state.project_summary)
+          ? resolveNextActions('[NA:EMPTY]')
+          : null;
     } else if (!nextActions) {
       // Fallback: if LLM omitted next_actions tag for any non-answer action, derive from state.
-      if (state.existing_structure) {
-        nextActions = resolveNextActions('[NA:BUILDER_INSERTED]');
+      if (state.existing_structure?.inserted === true) {
+        nextActions = resolveNextActions(buildBuilderInsertedTag());
       } else if (state.inputs.some(i => i.source === 'text' || i.source === 'document')) {
         nextActions = resolveNextActions('[NA:GENERATE|CONFIDENCE:35]');
       }
@@ -341,22 +492,45 @@ async function handleResponse(r, userText) {
     if (willExtractOpenPoints) {
       if ((state._openPointsLoadingCount || 0) === 0) state._openPointsLoadingStart = Date.now();
       state._openPointsLoadingCount = (state._openPointsLoadingCount || 0) + newDocs.length;
+      // Per-doc loading set so the multi-doc tab bar can show a spinner per doc.
+      if (!state._docLoadingNames) state._docLoadingNames = new Set();
+      newDocs.forEach(d => state._docLoadingNames.add(d.name));
+      // Default the active context doc to the newest one being analyzed.
+      state._activeContextDoc = newDocs[newDocs.length - 1].name;
     }
 
-    addAssistantMessage(r.chat_response, nextActions, r.action);
+    // While extraction is pending, defer the NA bar and hint text — they reappear
+    // once all extractions complete (see the .finally chain below).
+    let _passNextActions = nextActions;
+    let _passText        = r.chat_response;
+    if (willExtractOpenPoints) {
+      state._pendingPostExtractNA = nextActions;
+      _passNextActions = null;
+      if (typeof r.chat_response === 'object' && r.chat_response && r.chat_response.hint) {
+        state._pendingPostExtractHint = r.chat_response.hint;
+        _passText = { text: r.chat_response.text, hint: null };
+      }
+    }
 
-    // For answer mode, populate the NA bar with state-derived commands but keep it hidden.
-    // Typing `/` in the input can then reveal it — otherwise the slash trigger would be dead.
-    if (r.action === 'answer') {
+    addAssistantMessage(_passText, _passNextActions, r.action);
+
+    // For answer mode: if we didn't already render a visible NA (onboarding EMPTY),
+    // populate the bar with state-derived commands but keep it hidden — typing `/`
+    // reveals it. Skip when nextActions was already shown above.
+    if (r.action === 'answer' && !nextActions) {
       populateHiddenNextActions();
     }
 
-    // ── Per-doc open points extraction (parallel) ────────────────────────
+    // ── Per-doc detail extraction (parallel) ─────────────────────────────
     if (willExtractOpenPoints) {
       for (const d of newDocs) {
-        extractOpenPointsForDoc({ name: d.name, text: d.text }).finally(() => {
+        extractDetailsForDoc({ name: d.name, text: d.text }).finally(() => {
           state._openPointsLoadingCount = Math.max(0, (state._openPointsLoadingCount || 1) - 1);
-          if (state._openPointsLoadingCount === 0) state._openPointsLoadingStart = null;
+          if (state._docLoadingNames) state._docLoadingNames.delete(d.name);
+          if (state._openPointsLoadingCount === 0) {
+            state._openPointsLoadingStart = null;
+            finalizePostExtraction();
+          }
           refreshContextCardInLastMessage();
         });
       }
@@ -372,44 +546,111 @@ async function handleResponse(r, userText) {
     // Auto-set mode based on existing_structure.inserted and generation_type
     const _autoMode = (() => {
       if (handoff.mode) return handoff.mode;
-      if (agentKey === 'agent_builder') {
+      if (agentKey === 'builder') {
         if (state.existing_structure?.inserted === true) return 'diff';
-        if (handoff.generation_type === 'modules_features') return 'generate_features';
-        return 'generate';
+        if (handoff.generation_type === 'modules_features') return 'generate_modules_features';
+        return 'generate_modules';
       }
-      if (agentKey === 'agent_interviewer') {
+      if (agentKey === 'interview') {
         return 'enrich_context';
       }
-      return 'generate';
+      return 'generate_modules';
     })();
 
-    const agentPayload = {
-      to_agent:           agentKey,
-      generation_type:    handoff.generation_type    || null,
-      mode:               _autoMode,
-      user_input:         handoff.user_input         || null,
-      resolve_questions:  handoff.resolve_questions  || [],
-      inputs:             state.inputs,
-      project_summary:    state.project_summary,
-      project_context:    state.project_context,
-      existing_structure: state.existing_structure,
-      open_points:        state._openPoints || [],
-      resolved_points:    state._resolvedPoints || [],
-      project_language:   state.project_language || null,
-    };
+    // Route-to-agent dispatches go to builder or interview. Each agent receives
+    // only what its prompt INPUT spec demands.
+    const agentPayload = agentKey === 'interview'
+      ? payloadForInterview({
+          mode:  _autoMode,
+          phase: handoff.phase || 'questions',
+          depth: handoff.depth || null,
+        })
+      : payloadForBuilder({
+          mode:              _autoMode,
+          generation_type:   handoff.generation_type
+                              || state.existing_structure?.generation_type
+                              || 'modules',
+          resolve_questions: handoff.resolve_questions || null,
+          user_input:        handoff.user_input || null,
+        });
 
     try {
-      // Single bundled call — mode-prompts map for `generate` / `generate_features`
+      // Single bundled call — mode-prompts map for `generate_modules` / `generate_modules_features`
       // concatenates pages + modules + a merge footer so the LLM returns both slots at once.
       const agentResponse = await callAgent(agentKey, agentPayload, { setModelLabel: true });
-      if (agentKey === 'agent_builder' && (_autoMode === 'generate' || _autoMode === 'generate_features')) {
+
+      // add_features: merge the returned features into the existing inserted tree.
+      // Modules are locked — only `features[]` per module is updated. No new builder
+      // card is rendered; the tree view refreshes in place.
+      if (agentKey === 'builder' && _autoMode === 'add_features') {
+        const resp = agentResponse || {};
+        const respSections = resp.sections
+            || resp.structure?.sections
+            || [];
+        const respFlatMods = resp.modules
+            || resp.structure?.modules
+            || [];
+
+        // Build a flat lookup of returned features by module id.
+        const featuresById = new Map();
+        for (const sec of respSections) {
+          for (const m of (sec.modules || [])) {
+            if (m && m.id) featuresById.set(m.id, m.features || []);
+          }
+        }
+        for (const m of respFlatMods) {
+          if (m && m.id) featuresById.set(m.id, m.features || []);
+        }
+
+        // Apply to existing_structure (in place) across sections, flat modules, and pages.
+        const applyFeaturesTo = (mod) => {
+          if (featuresById.has(mod.id)) mod.features = featuresById.get(mod.id);
+        };
+        (state.existing_structure?.sections || []).forEach(sec =>
+          (sec.modules || []).forEach(applyFeaturesTo)
+        );
+        (state.existing_structure?.modules || []).forEach(applyFeaturesTo);
+
+        // Promote generation_type so the REFINE NA reflects the new shape.
+        if (state.existing_structure) {
+          state.existing_structure.generation_type = 'modules_features';
+        }
+        state._mode = 'chat';
+        updateContextTag();
+
+        // Count modules/features for the confirmation message.
+        const allMods = [
+          ...((state.existing_structure?.sections || []).flatMap(s => s.modules || [])),
+          ...(state.existing_structure?.modules || []),
+        ];
+        const modulesWithFeaturesCount = allMods.filter(m => (m.features?.length || 0) > 0).length;
+        const totalFeatureCount = allMods.reduce((sum, m) => sum + (m.features?.length || 0), 0);
+
+        const headline = `✅ Features added to ${modulesWithFeaturesCount} module${modulesWithFeaturesCount !== 1 ? 's' : ''} (${totalFeatureCount} feature${totalFeatureCount !== 1 ? 's' : ''} total).`;
+        const bullets = [
+          '• Upload more documents or meeting transcripts',
+          '• Enrich your context with discovery questions',
+          '• Generate descriptions, user stories, or estimations',
+        ].join('\n');
+        const msg = `**${headline}**\n\n**🚀 What's next?**\n\n${bullets}`;
+        addAssistantMessage(
+          { text: msg, hint: null },
+          resolveNextActions(buildBuilderInsertedTag()),
+          'insert'
+        );
+        if (typeof renderLeftNavTree === 'function') renderLeftNavTree();
+        updateStatePanel();
+        return;
+      }
+
+      if (agentKey === 'builder' && (_autoMode === 'generate_modules' || _autoMode === 'generate_modules_features')) {
         // Normalize top-level pages/sections into the envelope the handler expects.
         // Builder's atomic/bundled output doesn't carry project_context or confidence —
         // inherit those from the current state (set by chat agent during analyze_*).
         const normalized = {
           ...agentResponse,
           status:          agentResponse.status || 'completed',
-          generation_type: handoff.generation_type || (_autoMode === 'generate_features' ? 'modules_features' : 'modules'),
+          generation_type: handoff.generation_type || (_autoMode === 'generate_modules_features' ? 'modules_features' : 'modules'),
           confidence:      agentResponse.confidence ?? state.project_context?.confidence ?? 0,
           project_context: agentResponse.project_context || state.project_context,
           structure: agentResponse.structure || {
@@ -433,7 +674,55 @@ async function handleResponse(r, userText) {
   updateStatePanel();
 }
 
-// ─── OPEN POINTS EXTRACTION (separate call per document, parallel) ──────────
+// ─── DETAIL EXTRACTION (separate call per document, parallel) ──────────────
+// Mines decisions, open_points, project_notes, and entities from each input.
+// Runs alongside analyze_document/analyze_input on the same input id.
+
+// Once all extract_details calls have completed, restore the deferred NA
+// bar + hint text and unlock the chat input.
+function finalizePostExtraction() {
+  // Restore NA bar
+  const deferredNA = state._pendingPostExtractNA;
+  if (deferredNA) {
+    renderNextActions(deferredNA);
+    state._pendingPostExtractNA = null;
+  }
+  // Append the deferred hint text to the last assistant message
+  const deferredHint = state._pendingPostExtractHint;
+  if (deferredHint) {
+    const msgs = document.querySelectorAll('.msg.assistant');
+    const last = msgs[msgs.length - 1];
+    if (last && !last.querySelector('.chat-hint')) {
+      const hint = document.createElement('div');
+      hint.className = 'chat-hint';
+      hint.innerHTML = renderMarkdown(deferredHint);
+      last.appendChild(hint);
+    }
+    state._pendingPostExtractHint = null;
+  }
+  // Patch the last assistant entry in _messageLog so a session reload restores
+  // both the NA bar and hint correctly.
+  if (typeof _messageLog !== 'undefined' && _messageLog.length > 0) {
+    for (let i = _messageLog.length - 1; i >= 0; i--) {
+      const e = _messageLog[i];
+      if (e && e.type === 'assistant') {
+        if (deferredNA && !e.nextActions) e.nextActions = deferredNA;
+        if (deferredHint) {
+          const cur = e.text;
+          if (typeof cur === 'object' && cur !== null) e.text = { ...cur, hint: deferredHint };
+          else e.text = { text: cur || '', hint: deferredHint };
+        }
+        break;
+      }
+    }
+  }
+  // Unlock chat input
+  isLoading = false;
+  document.getElementById('send-btn').style.display = 'flex';
+  document.getElementById('stop-btn').style.display = 'none';
+  if (typeof updateNaPlaceholder === 'function') updateNaPlaceholder();
+  if (typeof persistChat === 'function') persistChat();
+}
 
 // Re-render the context card inside the last assistant message using current state.
 function refreshContextCardInLastMessage() {
@@ -442,7 +731,7 @@ function refreshContextCardInLastMessage() {
   if (!lastMsg) return;
   const html = buildContextCardHTML();
   // Remove any existing tabbed card in this message and re-append a fresh one.
-  lastMsg.querySelectorAll('.cc-tabbed-card').forEach(el => el.remove());
+  lastMsg.querySelectorAll('.context-card').forEach(el => el.remove());
   if (html) {
     const wrap = document.createElement('div');
     wrap.innerHTML = html;
@@ -460,15 +749,19 @@ function refreshContextCardInLastMessage() {
   updateStatePanel?.();
 }
 
-async function extractOpenPointsForDoc({ name, text }) {
+async function extractDetailsForDoc({ name, text }) {
   if (!text) return;
-  const prompt = prompts['extract_open_points'];
-  // Log this call in the Prompt Stack tab so users can see the extract_open_points
-  // prompt was sent (it runs in parallel to analyze_document, outside getPromptForAgent).
+  // Send ONLY the extract action file — NOT composed with the analyze base / rules.
+  // The base prompt's "always emit chat_response / project_context / captured_topics"
+  // rules dominate when bundled, and the LLM ends up returning a full
+  // analyze_document response with empty extraction lists. The action file is
+  // self-contained (OUTPUT + RULES + BUCKETS) and works standalone.
+  const composedKeys = ['analyze_action_extract_details'];
+  const prompt = composedKeys.map(k => prompts[k]).filter(Boolean).join('\n\n');
   if (typeof recordPromptComposition === 'function') {
-    recordPromptComposition('extract_open_points', name, ['extract_open_points']);
+    recordPromptComposition('analyze', 'extract_details', composedKeys);
   }
-  if (!prompt) { console.warn('[OpenPoints] extract_open_points prompt not loaded'); return; }
+  if (!prompt) { console.warn('[ExtractDetails] prompt failed to compose'); return; }
 
   const docBlock = `[DOCUMENT: ${name}]\n\n${text}`;
   const payload = { document_text: docBlock, project_language: state.project_language || null };
@@ -478,7 +771,7 @@ async function extractOpenPointsForDoc({ name, text }) {
     if (!key) return;
     const userMsg = JSON.stringify(payload, null, 2);
     const content = docBlock + '\n\n' + userMsg;
-    const model = getModelForAgent('agent_chat');
+    const model = getModelForAgent('analyze');
 
     let response;
     if (provider === 'anthropic') {
@@ -515,28 +808,59 @@ async function extractOpenPointsForDoc({ name, text }) {
       response = parseJSON(data.candidates[0].content.parts[0].text);
     }
 
-    // Tag entries from extraction with source only. No NEW badge — the user
-    // just uploaded the document, every extracted item is trivially "new", so
-    // the badge adds noise. NEW is reserved for explicit user changes (add_input).
-    const tag = (p) => ({ ...p, source: p.source || name });
-    const newOpen  = Array.isArray(response?.open_points)   ? response.open_points.map(tag)   : [];
-    const newNotes = Array.isArray(response?.project_notes) ? response.project_notes.map(tag) : [];
-    if (newOpen.length  > 0) state._openPoints   = [...(state._openPoints   || []), ...newOpen];
-    if (newNotes.length > 0) state._projectNotes = [...(state._projectNotes || []), ...newNotes];
+    // The new extract_details prompt returns its lists nested under inputs[*]
+    // (one entry per input id, merge-by-id on the backend). The frontend
+    // playground reads both shapes — nested under inputs[*] (current contract)
+    // and flat top-level (legacy) — so prompt edits don't break extraction.
+    const docInput = (state.inputs || []).find(i => i.source === 'document' && i.name === name);
+    const docSrcKey = docInput?.id || name;
+    const tag = (p) => ({ ...p, source: p.source || docSrcKey });
 
-    if (typeof showDebugOutput === 'function') showDebugOutput(response, 'extract_open_points');
-    console.log('[OpenPoints] extracted', response?.open_points?.length || 0, 'points from', name);
+    const collectFromInputs = (field) => {
+      const out = [];
+      const inputs = Array.isArray(response?.inputs) ? response.inputs : [];
+      for (const entry of inputs) {
+        if (Array.isArray(entry?.[field])) out.push(...entry[field]);
+      }
+      // Legacy top-level fallback if the model emitted flat lists.
+      if (out.length === 0 && Array.isArray(response?.[field])) {
+        out.push(...response[field]);
+      }
+      return out.map(tag);
+    };
+
+    const newOpen      = collectFromInputs('open_points');
+    const newNotes     = collectFromInputs('project_notes');
+    const newDecisions = collectFromInputs('decisions');
+    const newEntities  = collectFromInputs('entities');
+
+    if (newOpen.length      > 0) state._openPoints   = [...(state._openPoints   || []), ...newOpen];
+    if (newNotes.length     > 0) state._projectNotes = [...(state._projectNotes || []), ...newNotes];
+    if (newDecisions.length > 0) state._decisions    = [...(state._decisions    || []), ...newDecisions];
+    if (newEntities.length  > 0) state._entities     = [...(state._entities     || []), ...newEntities];
+
+    // Append (don't overwrite) so the upstream analyze_document output stays visible.
+    if (typeof appendDebugOutput === 'function') {
+      appendDebugOutput(response, 'extract_details', `extract_details · ${name}`);
+    }
+    console.log(
+      `[ExtractDetails] ${name}: ${newOpen.length} open_points, ${newNotes.length} notes, ${newDecisions.length} decisions, ${newEntities.length} entities`
+    );
+    if (newOpen.length === 0 && newNotes.length === 0 && newDecisions.length === 0 && newEntities.length === 0) {
+      console.log('[ExtractDetails] Empty extraction — raw response:', response);
+    }
   } catch (err) {
-    console.warn('[OpenPoints] extraction failed for', name, '—', err.message);
+    console.warn('[ExtractDetails] failed for', name, '—', err.message);
   }
 }
+
 
 // ─── AGENT RESPONSE HANDLING ─────────────────────────────────────────────────
 
 async function handleAgentResponse(agentKey, r) {
 
   // ── Structure Generator ───────────────────────────────────────────────────
-  if (agentKey === 'agent_builder') {
+  if (agentKey === 'builder') {
     // GUARD: open_questions[] must never auto-trigger CB widget
     // They are only shown when user clicks "Resolve assumptions"
     if (r.open_questions) {
@@ -544,9 +868,14 @@ async function handleAgentResponse(agentKey, r) {
       delete r.questions; // prevent any accidental CB question handling
     }
 
-    // Always save project_context if returned
+    // Always save project_context if returned. Merge so enriched fields
+    // (summary/entities/covered/gaps/built_at) from the Builder don't drop
+    // confidence/platform_type/market_type set earlier by the Chat agent.
     if (r.project_context) {
-      state.project_context = r.project_context;
+      if (r.project_context.built_at === 'auto') {
+        r.project_context.built_at = new Date().toISOString();
+      }
+      state.project_context = { ...(state.project_context || {}), ...r.project_context };
     }
 
     // Move resolved answers to _resolvedPoints (shown separately, not in captured topics)
@@ -560,10 +889,9 @@ async function handleAgentResponse(agentKey, r) {
       // Clear cached questions — new builder output means new assumptions
       _lastOpenQuestions = [];
 
-      // Atomic mode responses (resolve/refine/etc.) return only the slots they touched —
-      // preserve the rest from existing_structure instead of wiping them.
-      // The generate flow wraps its result in r.structure (via the normalizer), so
-      // r.structure.pages is always authoritative. Raw responses from resolve/refine may
+      // Atomic mode responses (resolve/diff/etc.) return only the slots they touched —
+      // preserve the rest from the current proposed structure (if we're iterating on
+      // it) or fall back to existing_structure. Raw responses from resolve/diff may
       // include empty pages/modules as LLM filler — only treat non-empty arrays or
       // explicit r.structure slots as intentional.
       const hasPages    = (r.structure?.pages    !== undefined) || (r.pages?.length    > 0);
@@ -572,9 +900,28 @@ async function handleAgentResponse(agentKey, r) {
 
       const struct = r.structure || { pages: r.pages, sections: r.sections, modules: r.modules };
 
-      let pages    = hasPages    ? (struct.pages    || []) : (state.existing_structure?.pages    || []);
-      let sections = hasSections ? (struct.sections || []) : (state.existing_structure?.sections || []);
-      let modules  = hasModules  ? (struct.modules  || []) : (state.existing_structure?.modules  || []);
+      // Normalize new-prompt schema → frontend schema:
+      // The Builder prompts emit `open_points: ["..."]` on modules/features/pages.
+      // The card-render code reads `assumptions`. Mirror open_points → assumptions
+      // (only when assumptions isn't already populated) so existing renderers work.
+      const _mirrorOpenPoints = (item) => {
+        if (!item || typeof item !== 'object') return;
+        if ((!item.assumptions || item.assumptions.length === 0) && Array.isArray(item.open_points)) {
+          item.assumptions = item.open_points.map(p => (typeof p === 'string' ? p : (p?.title || p?.text || ''))).filter(Boolean);
+        }
+        (item.features || []).forEach(_mirrorOpenPoints);
+      };
+      (struct.pages    || []).forEach(_mirrorOpenPoints);
+      (struct.modules  || []).forEach(_mirrorOpenPoints);
+      (struct.sections || []).forEach(sec => (sec.modules || []).forEach(_mirrorOpenPoints));
+
+      // Prefer the in-flight proposed tree (mid-iteration) over the committed
+      // tree as the fallback source — resolve responses often only touch the
+      // slot they edited and expect the proposal to carry through.
+      const fillBase = state._proposedStructure || state.existing_structure || {};
+      let pages    = hasPages    ? (struct.pages    || []) : (fillBase.pages    || []);
+      let sections = hasSections ? (struct.sections || []) : (fillBase.sections || []);
+      let modules  = hasModules  ? (struct.modules  || []) : (fillBase.modules  || []);
       if (r.diff) {
         const prevModules = [
           ...(state.existing_structure?.pages    || []),
@@ -591,16 +938,37 @@ async function handleAgentResponse(agentKey, r) {
         sections = sections.map(sec => ({ ...sec, modules: mergeA(sec.modules) }));
       }
 
-      // Snapshot previous modules BEFORE updating state — needed for diff comparison
+      // Append synthetic "Notes" pages (one per doc) from state._projectNotes.
+      // Frontend-only — the Builder LLM never sees these. Strip any prior
+      // synthetic pages first (from state fallback or LLM echo) so resolve/diff
+      // re-renders don't accumulate duplicates.
+      pages = (pages || []).filter(p => p?.synthetic !== 'project_notes');
+      const synthPages = buildProjectNotePages();
+      if (synthPages.length > 0) pages = [...pages, ...synthPages];
+
+      // Assign module colors on the frontend — deterministic, token-free.
+      // Preserves colors of committed modules across regenerate / resolve / diff.
+      assignModuleColors(sections, modules, state.existing_structure);
+
+      // Normalize every summary field to the history-array shape. The LLM's
+      // OUTPUT schema uses arrays, but this guards against partial/legacy shapes.
+      if (typeof normalizeStructureSummaries === 'function') {
+        normalizeStructureSummaries({ pages, sections, modules });
+      }
+
+      // Snapshot previous committed modules — needed for diff comparison.
       const prevSnapshot = snapshotModules();
 
-      state.existing_structure = {
+      // Write to _proposedStructure (temporary). existing_structure is ONLY
+      // changed on Insert/Merge — this preserves the committed tree for the
+      // sidebar and guarantees discard is always safe.
+      state._proposedStructure = {
         pages,
         sections,
         modules,
         generation_type: r.generation_type || state.existing_structure?.generation_type || 'modules',
         confidence:      r.confidence || state.existing_structure?.confidence || state.project_context?.confidence || 0,
-        inserted:        false,
+        diff:            r.diff || null,
       };
       state._mode = 'builder';
       updateContextTag();
@@ -618,69 +986,190 @@ async function handleAgentResponse(agentKey, r) {
     // answered — builder answered a question without changing modules
     if (r.status === 'answered') {
       if (r.chat_response) {
-        addAssistantMessage(r.chat_response, null, 'agent_builder');
+        addAssistantMessage(r.chat_response, null, 'builder');
       }
       updateStatePanel();
       return;
     }
 
-    // diff_completed — render diff card
+    // diff_completed — LLM returned a DELTA (new_modules[] + updated_modules[]).
+    // The frontend builds the proposed tree by overlaying the delta on the
+    // committed tree and computes `unchanged` itself.
     if (r.status === 'diff_completed') {
-      const struct = r.structure || {};
+      const newMods = Array.isArray(r.new_modules)     ? r.new_modules     : [];
+      const updMods = Array.isArray(r.updated_modules) ? r.updated_modules : [];
 
-      // Build a map of assumptions from the previous state keyed by module id.
-      // The LLM only returns what changed — unchanged modules often come back
-      // without assumptions[], which would wipe out the "open points" tags.
-      const prevModules = [
-        ...(state.existing_structure?.pages    || []),
-        ...(state.existing_structure?.sections?.flatMap(s => s.modules || []) || []),
-        ...(state.existing_structure?.modules  || []),
-      ];
-      const prevAssumpMap = new Map(prevModules.map(m => [m.id, m.assumptions || []]));
+      // Deep clone the committed tree as the proposed-tree base.
+      const committed = state.existing_structure || { pages: [], sections: [], modules: [] };
+      const proposed = JSON.parse(JSON.stringify(committed));
+      proposed.pages    = proposed.pages    || [];
+      proposed.sections = proposed.sections || [];
+      proposed.modules  = proposed.modules  || [];
 
-      const mergeAssumptions = (modules) =>
-          (modules || []).map(m => ({
-            ...m,
-            assumptions: (m.assumptions?.length > 0)
-                ? m.assumptions
-                : (prevAssumpMap.get(m.id) || []),
-          }));
-
-      const mergedPages    = mergeAssumptions(struct.pages);
-      const mergedModules  = mergeAssumptions(struct.modules);
-      const mergedSections = (struct.sections || []).map(sec => ({
-        ...sec,
-        modules: mergeAssumptions(sec.modules),
-      }));
-
-      // Patch r.structure so renderDiffCard also sees the merged assumptions
-      const mergedStruct = {
-        ...struct,
-        pages:    mergedPages,
-        modules:  mergedModules,
-        sections: mergedSections,
+      // History-aware merge for a single module. The LLM returns `summary` as
+      // an array with ONE entry (the new version) — the client appends that to
+      // the existing history. If `summary` is absent, keep the prior history.
+      const nowIso = new Date().toISOString();
+      const mergeUpdatedModule = (prev, upd) => {
+        const out = { ...prev, ...upd };
+        // Summary — only append when the LLM actually returned one.
+        if (Object.prototype.hasOwnProperty.call(upd, 'summary') && Array.isArray(upd.summary) && upd.summary.length > 0) {
+          const entry = upd.summary[0];
+          out.summary = appendSummaryEntry(prev.summary, { ...entry, date: entry?.date || nowIso });
+        } else {
+          out.summary = normalizeSummary(prev.summary, nowIso);
+        }
+        // Features — history-aware per feature. If upd.features is absent, keep prev.features.
+        if (Array.isArray(upd.features)) {
+          const prevFById = new Map((prev.features || []).map(f => [f.id, f]));
+          out.features = upd.features.map(nf => {
+            const pf = prevFById.get(nf.id);
+            if (!pf) {
+              // New feature — normalize its single-entry summary, stamp date.
+              const hist = normalizeSummary(nf.summary, nowIso);
+              return { ...nf, summary: hist };
+            }
+            const mergedF = { ...pf, ...nf };
+            if (Object.prototype.hasOwnProperty.call(nf, 'summary') && Array.isArray(nf.summary) && nf.summary.length > 0) {
+              const fe = nf.summary[0];
+              mergedF.summary = appendSummaryEntry(pf.summary, { ...fe, date: fe?.date || nowIso });
+            } else {
+              mergedF.summary = normalizeSummary(pf.summary, nowIso);
+            }
+            return mergedF;
+          });
+        }
+        return out;
       };
-      const rPatched = { ...r, structure: mergedStruct };
 
-      // Snapshot previous modules BEFORE updating state — needed for diff comparison
+      // Apply updated modules — find by id across sections and flat modules.
+      for (const upd of updMods) {
+        let applied = false;
+        for (const sec of proposed.sections) {
+          const idx = (sec.modules || []).findIndex(m => m.id === upd.id);
+          if (idx >= 0) {
+            sec.modules[idx] = mergeUpdatedModule(sec.modules[idx], upd);
+            applied = true;
+            break;
+          }
+        }
+        if (!applied) {
+          const idx = proposed.modules.findIndex(m => m.id === upd.id);
+          if (idx >= 0) proposed.modules[idx] = mergeUpdatedModule(proposed.modules[idx], upd);
+        }
+      }
+
+      // Apply new modules — target section by `section_id`, else first section,
+      // else the flat module list. Normalize their single-entry summary + stamp date.
+      const stampNewModule = (m) => ({
+        ...m,
+        summary: normalizeSummary(m.summary, nowIso),
+        features: Array.isArray(m.features)
+          ? m.features.map(f => ({ ...f, summary: normalizeSummary(f.summary, nowIso) }))
+          : m.features,
+      });
+      for (const raw of newMods) {
+        const newMod = stampNewModule(raw);
+        const sec = proposed.sections.find(s => s.id === newMod.section_id);
+        if (sec) {
+          sec.modules = sec.modules || [];
+          sec.modules.push(newMod);
+        } else if (proposed.sections.length > 0) {
+          proposed.sections[0].modules = proposed.sections[0].modules || [];
+          proposed.sections[0].modules.push(newMod);
+        } else {
+          proposed.modules.push(newMod);
+        }
+      }
+
+      // Refresh synthetic Notes pages from current state (handles new uploaded docs).
+      proposed.pages = proposed.pages.filter(p => p?.synthetic !== 'project_notes');
+      const synthPages = buildProjectNotePages();
+      if (synthPages.length > 0) proposed.pages.push(...synthPages);
+
+      // Assign colors — preserve committed module colors, assign new ones fresh.
+      assignModuleColors(proposed.sections, proposed.modules, state.existing_structure);
+
+      // Build the diff object from the delta.
+      const newIds = new Set(newMods.map(m => m.id));
+      const updIds = new Set(updMods.map(m => m.id));
+      const diff = {
+        new:       newMods.map(m => ({ id: m.id, name: m.name, type: 'module' })),
+        updated:   updMods.map(m => ({ id: m.id, name: m.name, type: 'module' })),
+        unchanged: [],
+      };
+
+      // Calculate unchanged modules from the committed tree.
+      const committedModules = [
+        ...(committed.sections || []).flatMap(s => s.modules || []),
+        ...(committed.modules  || []),
+      ];
+      for (const m of committedModules) {
+        if (!newIds.has(m.id) && !updIds.has(m.id)) {
+          diff.unchanged.push({ id: m.id, name: m.name, type: 'module' });
+        }
+      }
+
+      // Page diff — synthetic Notes pages only exist frontend-side. Compare
+      // committed vs proposed page lists.
+      const committedPages = committed.pages || [];
+      const committedPageById = new Map(committedPages.map(p => [p.id, p]));
+      for (const p of proposed.pages) {
+        const oldPage = committedPageById.get(p.id);
+        if (!oldPage) {
+          diff.new.push({ id: p.id, name: p.name, type: 'page' });
+          continue;
+        }
+        const oldItemCount = Array.isArray(oldPage.checkbox_items) ? oldPage.checkbox_items.length : 0;
+        const newItemCount = Array.isArray(p.checkbox_items)        ? p.checkbox_items.length        : 0;
+        // Summary may be either a history array (non-synthetic pages) or a
+        // string (synthetic Notes pages) — compare the current text either way.
+        const oldSummaryText = currentSummaryText(oldPage.summary);
+        const newSummaryText = currentSummaryText(p.summary);
+        if (oldPage.name !== p.name || oldSummaryText !== newSummaryText || oldItemCount !== newItemCount) {
+          diff.updated.push({
+            id: p.id, name: p.name, type: 'page',
+            changes: oldItemCount !== newItemCount
+              ? `${newItemCount} item${newItemCount !== 1 ? 's' : ''} (was ${oldItemCount})`
+              : 'Content updated',
+          });
+        } else {
+          diff.unchanged.push({ id: p.id, name: p.name, type: 'page' });
+        }
+      }
+
+      // Snapshot committed modules — used by renderDiffCard for renamed detection.
       const prevSnapshot = snapshotModules();
 
-      state.existing_structure = {
-        pages:           mergedPages,
-        sections:        mergedSections,
-        modules:         mergedModules,
-        generation_type: r.generation_type || 'modules',
-        confidence:      r.confidence || 0,
-        inserted:        true,
+      // Commit to _proposedStructure. state.existing_structure stays untouched.
+      state._proposedStructure = {
+        pages:           proposed.pages,
+        sections:        proposed.sections,
+        modules:         proposed.modules,
+        generation_type: r.generation_type || state.existing_structure?.generation_type || 'modules',
+        confidence:      r.confidence || state.project_context?.confidence || 0,
+        diff,
       };
-      renderDiffCard(rPatched, prevSnapshot);
+      state._mode = 'builder';
+      updateContextTag();
+      renderDiffCard({
+        structure: {
+          pages:    proposed.pages,
+          sections: proposed.sections,
+          modules:  proposed.modules,
+        },
+        diff,
+        confidence:      state._proposedStructure.confidence,
+        generation_type: state._proposedStructure.generation_type,
+      }, prevSnapshot);
+      if (typeof renderLeftNavTree === 'function') renderLeftNavTree();
       updateStatePanel();
       return;
     }
   }
 
   // ── Interviewer Agent (enrich flow) ──────────────────────────────────────
-  if (agentKey === 'agent_interviewer') {
+  if (agentKey === 'interview') {
     if (r.status === 'questions_ready' && r.questions?.length > 0) {
       _cbEnrichContextMode = true;
       showCBWidget(r.questions, _cbEnrichContextSource);
@@ -711,25 +1200,36 @@ async function handleAgentResponse(agentKey, r) {
           summary: String(ei.detail || '').split(' ').slice(0, 8).join(' '),
         }));
         state._capturedTopics = mergeTopics(state._capturedTopics || [], newTopics);
+        // Open the Added tab and mark it with a "New" badge until the user clicks a tab.
+        state._activeContextDoc = '__added__';
+        state._addedTabHasNew = true;
+        // Tag each new topic title as NEW so it shows the green pill next to the title
+        // (used when there's no Added tab — e.g. no documents uploaded yet).
+        state._topicTags = state._topicTags || {};
+        newTopics.forEach(t => {
+          if (t.title) state._topicTags[String(t.title).toLowerCase()] = 'NEW';
+        });
       }
       if (r.project_context) {
         state.project_context = { ...(state.project_context || {}), ...r.project_context };
       }
       if (state._mode === 'builder') {
-        if (r.chat_response) addAssistantMessage(r.chat_response, null, 'enrich_context');
-        showBuilderCardNA();
+        // Close the Builder card and return to Chat — same as /discard
+        state.existing_structure = null;
+        state._mode = 'chat';
+        state._resolvedAnswers = [];
+        updateContextTag();
+      }
+      const conf = state.project_context?.confidence || 35;
+      const nextActions = resolveNextActions(`[NA:GENERATE|CONFIDENCE:${conf}]`);
+      if (r.chat_response) {
+        addAssistantMessage(r.chat_response, nextActions, 'enrich_context');
       } else {
-        const conf = state.project_context?.confidence || 35;
-        const nextActions = resolveNextActions(`[NA:GENERATE|CONFIDENCE:${conf}]`);
-        if (r.chat_response) {
-          addAssistantMessage(r.chat_response, nextActions, 'enrich_context');
-        } else {
-          // Fallback — send through chat agent for a clean project recap
-          const input = document.getElementById('user-input');
-          if (input) {
-            input.value = 'Context closed';
-            sendMessage();
-          }
+        // Fallback — send through chat agent for a clean project recap
+        const input = document.getElementById('user-input');
+        if (input) {
+          input.value = 'Context closed';
+          sendMessage();
         }
       }
       updateStatePanel();
@@ -753,23 +1253,50 @@ async function onEnrichContextClose(source, answers) {
       addUserMessage([{ type: 'text', text: qaText }]);
       await submitEnrichContext(answers, 'enrich_completed');
     } else {
-      // No answers — send through chat agent for a clean project recap
-      const input = document.getElementById('user-input');
-      if (input) {
-        input.value = 'Context closed';
-        sendMessage();
-      }
+      // No answers — handle locally (no LLM call). submitEnrichContext short-circuits
+      // to the discard path which renders a recap with current captured topics + NA.
+      await submitEnrichContext(answers, 'discard');
     }
   }
   updateStatePanel();
+}
+
+// Helper: build the REFINE tag from current state (encodes genType +
+// whether a fresh input arrived after the last insert, which unlocks /regenerate).
+// Emitted post-insert per the prompts' next_actions contract.
+function buildBuilderInsertedTag() {
+  const es = state.existing_structure || {};
+  const genType = es.generation_type === 'modules_features' ? 'modules_features' : 'modules';
+  const insertedAt = es.inserted_at ? Date.parse(es.inserted_at) : 0;
+  const hasNewInput = (state.inputs || []).some(i => {
+    const t = i.added_at ? Date.parse(i.added_at) : 0;
+    return t && t > insertedAt;
+  });
+  const conf = state.project_context?.confidence || 0;
+  return `[NA:REFINE|GENTYPE:${genType}|NEW_INPUT:${hasNewInput ? '1' : '0'}|CONFIDENCE:${conf}]`;
 }
 
 // Helper: populate the NA bar with state-derived commands and immediately hide it.
 // Used in answer mode so that typing `/` in the chat input can still reveal commands.
 function populateHiddenNextActions() {
   let tag = null;
-  if (state.existing_structure) {
-    tag = '[NA:BUILDER_INSERTED]';
+  if (state._proposedStructure) {
+    // Iterating on a builder/diff card — surface card-level commands.
+    const allMods = [
+      ...(state._proposedStructure.sections?.flatMap(s => s.modules || []) || []),
+      ...(state._proposedStructure.modules || []),
+      ...(state._proposedStructure.pages || []),
+    ];
+    const assumptionCount = [...new Set(allMods.flatMap(m => [
+      ...(m.assumptions || []),
+      ...(m.features || []).flatMap(f => f.assumptions || []),
+    ]).filter(Boolean))].length;
+    const genType = state._proposedStructure.generation_type || 'modules';
+    const conf = state.project_context?.confidence || 0;
+    const isDiff = !!state._proposedStructure.diff;
+    tag = `[NA:BUILDER_CARD|ASSUMPTIONS:${assumptionCount}|GENTYPE:${genType}|CONFIDENCE:${conf}|DIFF:${isDiff ? '1' : '0'}]`;
+  } else if (state.existing_structure?.inserted) {
+    tag = buildBuilderInsertedTag();
   } else if (state.inputs.some(i => i.source === 'text' || i.source === 'document')) {
     const conf = state.project_context?.confidence || 35;
     tag = `[NA:GENERATE|CONFIDENCE:${conf}]`;
@@ -787,19 +1314,25 @@ function populateHiddenNextActions() {
   if (typeof updateNaPlaceholder === 'function') updateNaPlaceholder();
 }
 
-// Helper: show builder card NA commands based on current state
+// Helper: show builder card NA commands based on the card currently shown —
+// this is the PROPOSED structure when iterating on a builder/diff card, or
+// the committed existing_structure as a fallback.
 function showBuilderCardNA() {
-  if (!state.existing_structure) return;
+  const src = state._proposedStructure || state.existing_structure;
+  if (!src) return;
   const allMods = [
-    ...(state.existing_structure.sections?.flatMap(s => s.modules || []) || []),
-    ...(state.existing_structure.modules || []),
-    ...(state.existing_structure.pages || []),
+    ...(src.sections?.flatMap(s => s.modules || []) || []),
+    ...(src.modules || []),
+    ...(src.pages || []),
   ];
   const assumptionCount = [...new Set(allMods.flatMap(m => [
     ...(m.assumptions || []),
     ...(m.features || []).flatMap(f => f.assumptions || []),
   ]).filter(Boolean))].length;
-  const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${assumptionCount}]`);
+  const genType = state._proposedStructure?.generation_type || state.existing_structure?.generation_type || 'modules';
+  const conf = state.project_context?.confidence || 0;
+  const isDiff = !!state._proposedStructure?.diff;
+  const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${assumptionCount}|GENTYPE:${genType}|CONFIDENCE:${conf}|DIFF:${isDiff ? '1' : '0'}]`);
   renderNextActions(na);
 }
 
@@ -822,15 +1355,25 @@ function updateContextTag() {
   const bar   = document.getElementById('context-tag-bar');
   const label = document.getElementById('context-tag-label');
   const input = document.getElementById('user-input');
+  const sendBtn = document.getElementById('send-btn');
+  const isBuilder = state._mode === 'builder';
+  // Toggle a body-level flag so CSS can hide the send button / restyle the input
+  // while Builder mode is active (slash-only filter, no free-text submit).
+  document.body.classList.toggle('mode-builder', isBuilder);
+  // Leaving Builder mode also clears any collapsed-filter state from ESC.
+  if (!isBuilder) document.body.classList.remove('mode-builder-collapsed');
   if (!bar || !label) return;
-  if (state._mode === 'builder') {
+  if (isBuilder) {
     const textEl = label.querySelector('.context-tag-text');
     if (textEl) textEl.textContent = 'Builder';
     bar.style.display = 'flex';
-    if (input) input.placeholder = 'Add, rename, remove... or / for options';
+    if (input) input.placeholder = 'Filter';
+    // Only force-hide when not already loading — stop button owns the slot then.
+    if (sendBtn && !isLoading) sendBtn.style.display = 'none';
   } else {
     bar.style.display = 'none';
     if (input) input.placeholder = 'Type a message...';
+    if (sendBtn && !isLoading) sendBtn.style.display = 'flex';
   }
 }
 
@@ -846,30 +1389,200 @@ function snapshotModules() {
 }
 
 function renderDiffCard(r, prevModules) {
-  const diff = r.diff || { new: [], updated: [], unchanged: [] };
-  const newIds = new Set((diff.new || []).map(m => m.id));
+  const diff    = r.diff || { new: [], updated: [], unchanged: [] };
+  const struct  = r.structure || {};
+  prevModules   = prevModules || [];
 
-  // Use snapshot of previous modules (before state was updated)
-  prevModules = prevModules || [];
-  const prevNameById = new Map(prevModules.map(m => [m.id, m.name?.toLowerCase()]));
+  // Build id-indexed lookup over the proposed tree so diff entries
+  // (which carry only id + name + changes) can be resolved to full item data.
+  const itemsById = new Map();
+  const pageIds   = new Set();
+  for (const p of (struct.pages || [])) { itemsById.set(p.id, p); pageIds.add(p.id); }
+  for (const sec of (struct.sections || [])) {
+    for (const m of (sec.modules || [])) itemsById.set(m.id, m);
+  }
+  for (const m of (struct.modules || [])) itemsById.set(m.id, m);
 
-  // Classify updated[]: renamed (name changed) vs updated (content changed)
-  const renamedMap = new Map();
+  // Diff-opts for renderModuleRow — drive the tiny top-right changes label.
+  const newIds     = new Set((diff.new || []).map(m => m.id));
   const updMap     = new Map();
+  const renamedMap = new Map();
+  const prevNameById = new Map(prevModules.map(m => [m.id, m.name?.toLowerCase()]));
   for (const m of (diff.updated || [])) {
-    const oldName = prevNameById.get(m.id);
-    const newName = m.name?.toLowerCase();          // diff entry always carries new name
+    const oldName  = prevNameById.get(m.id);
+    const newName  = m.name?.toLowerCase();
     const prevName = prevModules.find(p => p.id === m.id)?.name || oldName || '';
-    if (oldName && newName && oldName !== newName) {
+    if (oldName && newName && oldName !== newName && !m.changes) {
       renamedMap.set(m.id, `Renamed from ${prevName}`);
     } else {
-      updMap.set(m.id, m.changes);
+      updMap.set(m.id, 'Updated');
     }
   }
+  // Per-module feature diff (only for UPDATED modules) — compares the proposed
+  // module's features against its committed counterpart so the expanded view
+  // shows only NEW / UPDATED features + an unchanged count.
+  const committedModulesById = new Map();
+  for (const s of (state.existing_structure?.sections || [])) {
+    for (const m of (s.modules || [])) committedModulesById.set(m.id, m);
+  }
+  for (const m of (state.existing_structure?.modules || [])) committedModulesById.set(m.id, m);
 
+  const featureDiffById = new Map();
+  for (const u of (diff.updated || [])) {
+    if (u.type === 'page') continue;
+    const proposed  = itemsById.get(u.id);
+    const committed = committedModulesById.get(u.id);
+    if (!proposed || !committed) continue;
+    const oldMap = new Map((committed.features || []).map(f => [f.id, f]));
+    const newFeatures     = [];
+    const updatedFeatures = [];
+    let unchangedCount    = 0;
+    for (const f of (proposed.features || [])) {
+      const old = oldMap.get(f.id);
+      if (!old) {
+        newFeatures.push({ ...f, _diffStatus: 'new' });
+      } else if (old.name !== f.name) {
+        updatedFeatures.push({ ...f, _diffStatus: 'updated', _changes: `Renamed from ${old.name}` });
+      } else if (currentSummaryText(old.summary) !== currentSummaryText(f.summary)) {
+        updatedFeatures.push({ ...f, _diffStatus: 'updated', _changes: 'Summary refined' });
+      } else if (JSON.stringify(old.assumptions || []) !== JSON.stringify(f.assumptions || [])) {
+        updatedFeatures.push({ ...f, _diffStatus: 'updated', _changes: 'Assumptions updated' });
+      } else {
+        unchangedCount++;
+      }
+    }
+    featureDiffById.set(u.id, { newFeatures, updatedFeatures, unchangedCount });
+  }
 
-  console.log('[Diff]', { new: [...newIds], renamed: [...renamedMap.entries()], updated: [...updMap.entries()] });
-  renderBuilderCard(r, { newIds, updMap, renamedMap });
+  const diffOpts = { newIds, updMap, renamedMap, featureDiffById };
+
+  // Header meta — count everything in the proposed tree.
+  const allMods = [
+    ...(struct.sections || []).flatMap(s => s.modules || []),
+    ...(struct.modules || []),
+  ];
+  const totalModules  = allMods.length;
+  const totalFeatures = allMods.reduce((sum, m) => sum + (m.features?.length || 0), 0);
+  const confidenceNum = (typeof r.confidence === 'number' && r.confidence > 0)
+      ? r.confidence
+      : (state.existing_structure?.confidence || state.project_context?.confidence || 0);
+  const confidence    = confidenceNum || '?';
+  const hasFeatures   = (r.generation_type === 'modules_features') || totalFeatures > 0;
+  const metaParts = [`${totalModules} module${totalModules !== 1 ? 's' : ''}`];
+  if (hasFeatures) metaParts.push(`${totalFeatures} feature${totalFeatures !== 1 ? 's' : ''}`);
+  metaParts.push(`${confidence}% confidence`);
+
+  let html = `<div class="builder-card" id="builder-card">`;
+  html += `<div class="builder-card-header" onclick="toggleBuilderCard(this)">
+    <span class="builder-card-title">Structure Diff</span>
+    <span class="builder-card-meta">${metaParts.join(' · ')}</span>
+    <span class="builder-card-chevron" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+  </div>
+  <div class="builder-card-body">`;
+
+  // Render one diff section (NEW or UPDATED) — splits into PAGES + MODULES subsections.
+  // Uses entry.type ('page' | 'module') when present; falls back to pageIds lookup
+  // for older/loose responses that don't carry the type field.
+  const isPageEntry = (e) => e.type === 'page' || (!e.type && pageIds.has(e.id));
+  const renderSection = (sectionClass, dotClass, labelText, entries, emptyText) => {
+    const pages   = (entries || []).filter(e =>  isPageEntry(e)).map(e => itemsById.get(e.id)).filter(Boolean);
+    const modules = (entries || []).filter(e => !isPageEntry(e)).map(e => itemsById.get(e.id)).filter(Boolean);
+    let out = `<div class="builder-diff-section ${sectionClass}">
+      <div class="builder-diff-section-header"><span class="builder-diff-dot ${dotClass}"></span>${labelText}</div>`;
+    if (pages.length === 0 && modules.length === 0) {
+      out += `<div class="builder-diff-empty">${escHtml(emptyText)}</div>`;
+    } else {
+      if (pages.length > 0) {
+        out += `<div class="builder-diff-subsection-label">PAGES</div>`;
+        for (const p of pages) out += renderModuleRow(p, 'builder-page', diffOpts);
+      }
+      if (modules.length > 0) {
+        out += `<div class="builder-diff-subsection-label">MODULES</div>`;
+        for (const m of modules) out += renderModuleRow(m, 'builder-module', diffOpts);
+      }
+    }
+    out += `</div>`;
+    return out;
+  };
+
+  const newEntries = diff.new || [];
+  const updEntries = diff.updated || [];
+  const unchanged  = diff.unchanged || [];
+
+  if (newEntries.length === 0 && updEntries.length === 0) {
+    // Nothing changed — render a single friendly placeholder instead of empty sections.
+    html += `<div class="builder-diff-noop">
+      No differences found. Your structure is up to date.
+    </div>`;
+  } else {
+    html += renderSection('builder-diff-new',     'builder-diff-dot-new',     'NEW',     newEntries, 'No new modules or pages.');
+    html += renderSection('builder-diff-updated', 'builder-diff-dot-updated', 'UPDATED', updEntries, 'No changes to existing modules.');
+  }
+
+  if (unchanged.length > 0) {
+    const names = unchanged.map(m => escHtml(m.name || '')).filter(Boolean).join(', ');
+    html += `<div class="builder-diff-section builder-diff-unchanged">
+      <div class="builder-diff-section-header"><span class="builder-diff-dot builder-diff-dot-unchanged"></span>UNCHANGED</div>
+      <div class="builder-diff-unchanged-list">${names}</div>
+    </div>`;
+  }
+
+  // Global assumptions footer (same shape as builder card).
+  const allItems = [
+    ...(struct.pages || []),
+    ...allMods,
+  ];
+  const globalAssumps = [
+    ...new Set(
+      allItems
+        .flatMap(m => [
+          ...(m.assumptions || []),
+          ...(m.features || []).flatMap(f => f.assumptions || []),
+        ])
+        .filter(Boolean)
+    )
+  ];
+  _lastOpenQuestions = r.open_questions || [];
+  const hasOpenPoints = allItems.some(m =>
+      (m.assumptions?.length > 0) ||
+      (m.features || []).some(f => f.assumptions?.length > 0)
+  );
+  const confidenceLabel = hasOpenPoints
+      ? (confidenceNum >= 75 ? 'minor open points' : 'with open points')
+      : '';
+  if (globalAssumps.length > 0) {
+    const GA_VISIBLE   = 6;
+    const visibleItems = globalAssumps.slice(0, GA_VISIBLE).map(a => `<li>${escHtml(a)}</li>`).join('');
+    const hiddenItems  = globalAssumps.slice(GA_VISIBLE).map(a => `<li>${escHtml(a)}</li>`).join('');
+    const overflow     = globalAssumps.length - GA_VISIBLE;
+    html += `<div class="builder-assumptions">
+      <span class="builder-confidence-badge">${confidence}% confidence${confidenceLabel ? ' · ' + confidenceLabel : ''}</span>
+      <ul class="assumption-list">
+        ${visibleItems}
+        ${hiddenItems ? `<span class="assumption-hidden" style="display:none;">${hiddenItems}</span>` : ''}
+      </ul>
+      ${overflow > 0 ? `<button class="assumption-toggle" onclick="toggleAssumptions(this)" data-more="${overflow}">Show ${overflow} more</button>` : ''}
+    </div>`;
+  }
+
+  html += `</div>`; // close .builder-card-body
+  html += `</div>`; // close .builder-card
+
+  if (!_restoring) _messageLog.push({ type: 'builder', data: r, variant: 'diff' });
+
+  removeAllNextActions();
+  const el = document.createElement('div');
+  el.className = 'msg assistant';
+  el.innerHTML = html;
+  document.getElementById('messages').appendChild(el);
+  scrollToBottom();
+
+  if (!_restoring) {
+    const genType = r.generation_type || state.existing_structure?.generation_type || 'modules';
+    const conf = state.project_context?.confidence || r.confidence || 0;
+    const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${globalAssumps.length}|GENTYPE:${genType}|CONFIDENCE:${conf}|DIFF:1]`);
+    renderNextActions(na);
+  }
 }
 
 // ─── STRUCTURE CARD RENDERER ─────────────────────────────────────────────────
@@ -882,7 +1595,12 @@ function renderBuilderCard(r, diffOpts) {
   const pages           = struct.pages    || [];
   const sections        = struct.sections || [];
   const flatModules     = struct.modules  || [];
-  const confidence      = r.confidence   || '?';
+  // Regenerate / resolve responses often omit top-level `confidence` — fall back
+  // to the structure snapshot first, then the chat-agent's project_context.
+  const confidenceNum = (typeof r.confidence === 'number' && r.confidence > 0)
+      ? r.confidence
+      : (state.existing_structure?.confidence || state.project_context?.confidence || 0);
+  const confidence    = confidenceNum || '?';
   // Derive label from confidence + open points — don't rely on LLM
   const _hasOpenPoints = (() => {
     const allMods = [...pages, ...sections.flatMap(s=>s.modules||[]), ...flatModules];
@@ -892,7 +1610,7 @@ function renderBuilderCard(r, diffOpts) {
     );
   })();
   const label = _hasOpenPoints
-      ? (r.confidence >= 75 ? 'minor open points' : 'with open points')
+      ? (confidenceNum >= 75 ? 'minor open points' : 'with open points')
       : (r.assumption_label || '');
   const openQuestions   = r.open_questions   || [];
 
@@ -932,10 +1650,12 @@ function renderBuilderCard(r, diffOpts) {
   metaParts.push(`${confidence}% confidence`);
 
   let html = `<div class="builder-card" id="builder-card">`;
-  html += `<div class="builder-card-header">
+  html += `<div class="builder-card-header" onclick="toggleBuilderCard(this)">
     <span class="builder-card-title">${cardTitle}</span>
     <span class="builder-card-meta">${metaParts.join(' · ')}</span>
-  </div>`;
+    <span class="builder-card-chevron" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+  </div>
+  <div class="builder-card-body">`;
 
   // ── PAGES block (fixed header, no sections) ─────────────────────────────
   if (pages.length > 0) {
@@ -969,17 +1689,26 @@ function renderBuilderCard(r, diffOpts) {
   // ── Global assumptions footer ─────────────────────────────────────────────
   const hasAssumptions = globalAssumps.length > 0;
   if (globalAssumps.length > 0) {
+    const GA_VISIBLE = 6;
+    const visibleItems = globalAssumps.slice(0, GA_VISIBLE)
+      .map(a => `<li>${escHtml(a)}</li>`).join('');
+    const hiddenItems = globalAssumps.slice(GA_VISIBLE)
+      .map(a => `<li>${escHtml(a)}</li>`).join('');
+    const overflow = globalAssumps.length - GA_VISIBLE;
     html += `<div class="builder-assumptions">
       <span class="builder-confidence-badge">${confidence}% confidence · ${label}</span>
       <ul class="assumption-list">
-        ${globalAssumps.map(a => `<li>${escHtml(a)}</li>`).join('')}
+        ${visibleItems}
+        ${hiddenItems ? `<span class="assumption-hidden" style="display:none;">${hiddenItems}</span>` : ''}
       </ul>
+      ${overflow > 0 ? `<button class="assumption-toggle" onclick="toggleAssumptions(this)" data-more="${overflow}">Show ${overflow} more</button>` : ''}
     </div>`;
   }
 
   // resolve-card removed — resolve flow now uses cb-widget as chat message
 
-  html += `</div>`;
+  html += `</div>`; // close .builder-card-body
+  html += `</div>`; // close .builder-card
 
   // Log for JSON persistence
   if (!_restoring) _messageLog.push({ type: 'builder', data: r });
@@ -994,14 +1723,136 @@ function renderBuilderCard(r, diffOpts) {
 
   // Show builder actions as NA commands
   if (!_restoring) {
-    const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${globalAssumps.length}]`);
+    const genType = r.generation_type || state._proposedStructure?.generation_type || state.existing_structure?.generation_type || 'modules';
+    const conf = state.project_context?.confidence || r.confidence || 0;
+    const isDiff = !!state._proposedStructure?.diff;
+    const na = resolveNextActions(`[NA:BUILDER_CARD|ASSUMPTIONS:${globalAssumps.length}|GENTYPE:${genType}|CONFIDENCE:${conf}|DIFF:${isDiff ? '1' : '0'}]`);
     renderNextActions(na);
   }
 }
 
 // renderModulesByLabel removed — sections now come directly from LLM output
 
+// Build a page per uploaded document from state._projectNotes, grouped by source.
+// Each page = top-level (no section), named "Notes (DD.MM.YYYY)".
+function buildProjectNotePages() {
+  const notes = state._projectNotes || [];
+  if (notes.length === 0) return [];
+  const docs = (state.inputs || []).filter(i => i.source === 'document');
+
+  // Group notes by lowercased source.
+  const groups = new Map();
+  for (const n of notes) {
+    if (typeof n !== 'object' || n === null) continue;
+    const src = String(n.source || '').toLowerCase() || '__unsourced__';
+    if (!groups.has(src)) groups.set(src, []);
+    groups.get(src).push(n);
+  }
+
+  const pages = [];
+  // IDs must be stable across calls — using Date.now() would make every diff
+  // see the pages as "new" and the additive merge would duplicate them.
+  const slugify = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'doc';
+  docs.forEach((d, idx) => {
+    // Prefer matching by the document input's stable id, fall back to filename
+    // for notes that were tagged before this migration.
+    const items = groups.get(String(d.id   || '').toLowerCase())
+               || groups.get(String(d.name || '').toLowerCase());
+    if (!items || items.length === 0) return;
+    const date = (typeof extractDateFromText === 'function' ? extractDateFromText(d.text) : null)
+              || (typeof extractDateFromFilename === 'function' ? extractDateFromFilename(d.name) : null);
+    const dateLabel = date && typeof formatDate === 'function' ? formatDate(date) : null;
+    const name = dateLabel ? `Notes (${dateLabel})` : `Notes (Doc ${idx + 1})`;
+    pages.push({
+      id: `synth_pn_${slugify(d.id || d.name || `doc_${idx}`)}`,
+      name,
+      summary: `${items.length} planning / organizational item${items.length > 1 ? 's' : ''}`,
+      checkbox_items: items.map(it => ({ title: it.title || '', summary: it.summary || '' })),
+      synthetic: 'project_notes',
+    });
+  });
+
+  const unsourced = groups.get('__unsourced__');
+  if (unsourced && unsourced.length > 0) {
+    pages.push({
+      id: `synth_pn_misc`,
+      name: 'Notes',
+      summary: `${unsourced.length} item${unsourced.length > 1 ? 's' : ''}`,
+      checkbox_items: unsourced.map(it => ({ title: it.title || '', summary: it.summary || '' })),
+      synthetic: 'project_notes',
+    });
+  }
+  return pages;
+}
+
+// Short date formatter — "Apr 18" style. Honors project_language when set.
+function formatShortDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const lang = (state.project_language || 'en').toLowerCase();
+  try {
+    return new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric' }).format(d);
+  } catch (e) {
+    return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(d);
+  }
+}
+
+// Render one summary history entry as a .sh-box block.
+//   entry: { text, date?, source? }
+//   kind:  'prev' | 'next' | 'new' | 'initial'
+//     - 'initial' = builder card first generate (no label, just date, grey)
+//   scale: 'module' (default) | 'feature' — feature mode uses tighter padding
+function renderSummaryBox(entry, kind, scale) {
+  const date  = entry?.date ? formatShortDate(entry.date) : '';
+  let head = '';
+  if (kind === 'initial') {
+    head = date; // no label word — section-label "Summary" above already names it
+  } else {
+    const label = kind === 'prev' ? 'Previous' : kind === 'next' ? 'Updated' : 'Added';
+    head = date ? `${label} · ${date}` : label;
+  }
+  const scaleCls = scale === 'feature' ? ' sh-box-feature' : '';
+  return `<div class="sh-box sh-box-${kind}${scaleCls}">
+    ${head ? `<div class="sh-box-head">${escHtml(head)}</div>` : ''}
+    <div class="sh-box-text">${escHtml(entry?.text || '')}</div>
+  </div>`;
+}
+
 function renderModuleRow(item, cssClass, diffOpts) {
+  // Synthetic project-notes page — renders a checkbox list instead of features/assumptions
+  if (item?.synthetic === 'project_notes' && Array.isArray(item.checkbox_items)) {
+    const count = item.checkbox_items.length;
+    const pageId = item.id || '';
+    const listHtml = item.checkbox_items.map((it, idx) => {
+      const title   = escHtml(it.title || '');
+      const summary = escHtml(it.summary || '');
+      const noteId  = escHtml(it.id || `${pageId}_note_${idx}`);
+      return `<label class="builder-checkbox-item" onclick="event.stopPropagation()">
+        <input type="checkbox" class="builder-select-checkbox builder-select-note" data-id="${noteId}" data-parent-id="${escHtml(pageId)}" checked>
+        <span class="builder-checkbox-text"><strong>${title}</strong>${summary ? `: ${summary}` : ''}</span>
+      </label>`;
+    }).join('');
+    const pageCb = `<input type="checkbox" class="builder-select-checkbox builder-select-page" data-id="${escHtml(pageId)}" checked onclick="event.stopPropagation()" onchange="onBuilderSelectToggle(this)">`;
+    return `<div class="builder-row ${cssClass} builder-row-project-notes" data-id="${escHtml(pageId)}" onclick="this.classList.toggle('open')">
+      <div class="builder-row-header">
+        <div class="builder-row-left">
+          ${pageCb}
+          <span class="builder-row-chevron">&#9658;</span>
+          <span class="builder-row-name">${escHtml(item.name)}</span>
+          <span class="feature-count-badge">${count} item${count > 1 ? 's' : ''}</span>
+        </div>
+      </div>
+      <div class="builder-row-summary">
+        ${(() => {
+          const s = currentSummaryText(item.summary);
+          return s ? `<div class="builder-detail-summary">${escHtml(s)}</div>` : '';
+        })()}
+        <div class="builder-checkbox-list">${listHtml}</div>
+      </div>
+    </div>`;
+  }
+
   const hasAssumptions = item.assumptions?.length > 0;
   const featureCount   = item.features?.length || 0;
 
@@ -1010,75 +1861,157 @@ function renderModuleRow(item, cssClass, diffOpts) {
   const featureOpenCount = (item.features || []).reduce((s, f) => s + (f.assumptions?.length || 0), 0);
   const totalOpenCount   = moduleOpenCount + featureOpenCount;
 
+  // Diff context — drives whether we render a prev/next comparison or a fresh NEW box.
+  const isNewInDiff  = !!diffOpts?.newIds?.has(item.id);
+  const isUpdInDiff  = !!(diffOpts?.updMap?.has(item.id) || diffOpts?.renamedMap?.has(item.id));
+
+  // ── SUMMARY section — history-aware via .sh-box blocks ────────────────────
+  // For UPDATED modules in a diff, only render when the summary text actually
+  // changed (= history grew to 2+ entries). If history is still length 1 the
+  // module made it into updated_modules[] for assumption/feature reasons only —
+  // skip the section so it doesn't show stale text under an "Updated" label.
+  let summaryBoxes = '';
+  const history = Array.isArray(item.summary) ? item.summary : (typeof item.summary === 'string' && item.summary.trim() ? [{ text: item.summary }] : []);
+  if (history.length > 0) {
+    if (isUpdInDiff && history.length >= 2) {
+      summaryBoxes =
+        renderSummaryBox(history[history.length - 2], 'prev') +
+        renderSummaryBox(history[history.length - 1], 'next');
+    } else if (isUpdInDiff) {
+      // Updated module, summary text unchanged → no summary section in the diff card.
+      summaryBoxes = '';
+    } else if (isNewInDiff) {
+      // NEW module in a diff — green "Added" box to stand out.
+      summaryBoxes = renderSummaryBox(history[history.length - 1], 'new');
+    } else {
+      // Builder card (first generate, no diff context) — neutral grey box,
+      // no "Added" label. The section-label "SUMMARY" above already names it.
+      summaryBoxes = renderSummaryBox(history[history.length - 1], 'initial');
+    }
+  }
+
   // ── Expanded content ──────────────────────────────────────────────────────
   let detail = '';
 
-  if (item.summary) {
-    detail += `<div class="builder-detail-summary">${escHtml(item.summary)}</div>`;
+  if (summaryBoxes) {
+    detail += `<div class="sh-section"><div class="sh-section-label sh-section-label-first">Summary</div>${summaryBoxes}</div>`;
   }
 
-  // Module-level open points BEFORE features
+  // Module-level open points AFTER summary
   if (hasAssumptions) {
     const items = item.assumptions.map(a => `<li>${escHtml(a)}</li>`).join('');
-    detail += `<div class="builder-detail-section">
-      <div class="builder-detail-label">Open points</div>
+    detail += `<div class="sh-section">
+      <div class="sh-section-label">Open points</div>
       <ul class="builder-detail-list">${items}</ul>
     </div>`;
   }
 
-  if (featureCount > 0) {
-    const featureItems = item.features.map(f => {
-      const fAssumptions = f.assumptions || [];
-      const fHasOpen = fAssumptions.length > 0;
-      const fOpenHtml = fHasOpen
-          ? `<div class="builder-feature-open-points">
+  // Helper — render a single feature row with a summary box and (optional) open points.
+  const renderFeatureRow = (f, statusTag) => {
+    const fHistory = Array.isArray(f.summary) ? f.summary : (typeof f.summary === 'string' && f.summary.trim() ? [{ text: f.summary }] : []);
+    const fStatus  = f._diffStatus || null;
+    let fSummaryBoxes = '';
+    if (fHistory.length > 0) {
+      if (fStatus === 'updated' && fHistory.length >= 2) {
+        fSummaryBoxes =
+          renderSummaryBox(fHistory[fHistory.length - 2], 'prev', 'feature') +
+          renderSummaryBox(fHistory[fHistory.length - 1], 'next', 'feature');
+      } else if (fStatus === 'updated') {
+        // Updated feature without a real summary change — skip the box.
+        fSummaryBoxes = '';
+      } else if (fStatus === 'new') {
+        // NEW feature inside an updated module — green "Added" to highlight.
+        fSummaryBoxes = renderSummaryBox(fHistory[fHistory.length - 1], 'new', 'feature');
+      } else {
+        // Builder card (no diff) — neutral grey box, no "Added" label.
+        fSummaryBoxes = renderSummaryBox(fHistory[fHistory.length - 1], 'initial', 'feature');
+      }
+    }
+
+    const fAssumptions = f.assumptions || [];
+    const fOpenCount   = fAssumptions.length;
+    const fOpenHtml = fOpenCount > 0
+        ? `<div class="sh-feature-opens">
             <ul class="builder-detail-list">${fAssumptions.map(a => `<li>${escHtml(a)}</li>`).join('')}</ul>
           </div>`
-          : '';
-      return `<div class="builder-feature-row">
-        <div class="builder-feature-header">
-          <span class="builder-feature-name">${escHtml(f.name)}</span>
-        </div>
-        ${f.summary ? `<span class="builder-feature-summary">${escHtml(f.summary)}</span>` : ''}
-        ${fOpenHtml}
+        : '';
+    const fOpenBadge = fOpenCount > 0 ? `<span class="assumption-tag sh-open-badge">${fOpenCount}</span>` : '';
+
+    const fBodyHtml = (fSummaryBoxes || fOpenHtml)
+        ? `<div class="builder-feature-body">
+            ${fSummaryBoxes}
+            ${fOpenHtml}
+          </div>`
+        : '';
+    const statusHtml = statusTag
+        ? `<span class="sh-status-tag ${statusTag.kind === 'new' ? 'sh-status-new' : 'sh-status-upd'}">${escHtml(statusTag.text)}</span>`
+        : '';
+    return `<div class="builder-feature-row" onclick="event.stopPropagation();this.classList.toggle('open')">
+      <div class="builder-feature-header">
+        <input type="checkbox" class="builder-select-checkbox builder-select-feature" data-id="${escHtml(f.id || '')}" data-parent-id="${escHtml(item.id || '')}" checked onclick="event.stopPropagation()">
+        <span class="builder-feature-chevron">&#9658;</span>
+        <span class="builder-feature-name">${escHtml(f.name)}</span>
+        <span class="builder-feature-spacer"></span>
+        ${fOpenBadge}
+        ${statusHtml}
+      </div>
+      ${fBodyHtml}
+    </div>`;
+  };
+
+  const featureDiff = diffOpts?.featureDiffById?.get(item.id);
+  if (featureDiff) {
+    // Diff card — UPDATED module: show only NEW and UPDATED features + an
+    // unchanged counter line.
+    const { newFeatures, updatedFeatures, unchangedCount } = featureDiff;
+    if (newFeatures.length > 0) {
+      detail += `<div class="sh-section">
+        <div class="sh-section-label">New features</div>
+        <div class="builder-feature-list">${newFeatures.map(f => renderFeatureRow(f, { kind: 'new', text: 'New' })).join('')}</div>
       </div>`;
-    }).join('');
-    detail += `<div class="builder-detail-section">
-      <div class="builder-detail-label">Features</div>
+    }
+    if (updatedFeatures.length > 0) {
+      detail += `<div class="sh-section">
+        <div class="sh-section-label">Updated features</div>
+        <div class="builder-feature-list">${updatedFeatures.map(f => renderFeatureRow(f, { kind: 'upd', text: 'Updated' })).join('')}</div>
+      </div>`;
+    }
+    if (unchangedCount > 0) {
+      detail += `<div class="sh-unchanged-note">${unchangedCount} further feature${unchangedCount !== 1 ? 's' : ''} unchanged</div>`;
+    }
+  } else if (featureCount > 0) {
+    // Builder card (non-diff) OR NEW module in diff — render all features.
+    const featureItems = item.features.map(f => renderFeatureRow(f)).join('');
+    detail += `<div class="sh-section">
+      <div class="sh-section-label">Features</div>
       <div class="builder-feature-list">${featureItems}</div>
     </div>`;
   }
 
   const swatch = item.color ? `<span class="palette-swatch" style="background:${paletteColor(item.color)};"></span>` : '';
 
-  // Diff badge
-  let diffBadge = '';
-  if (diffOpts) {
-    if (diffOpts.newIds?.has(item.id)) {
-      diffBadge = `<span class="diff-badge diff-badge-new">New</span>`;
-    } else if (diffOpts.renamedMap?.has(item.id)) {
-      const changes = diffOpts.renamedMap.get(item.id);
-      diffBadge = `<span class="diff-badge diff-badge-renamed" title="${escHtml(changes||'')}">Renamed</span>`;
-    } else if (diffOpts.updMap?.has(item.id)) {
-      const changes = diffOpts.updMap.get(item.id);
-      diffBadge = `<span class="diff-badge diff-badge-updated" title="${escHtml(changes||'')}">Updated</span>`;
-    }
-  }
+  // No per-row New/Updated/Renamed tag — the diff card's NEW / UPDATED section
+  // headers already convey that grouping. Keeps the row header less noisy.
+  const headerTag = '';
 
   const featureBadge = featureCount > 0
       ? `<span class="feature-count-badge">${featureCount} feature${featureCount > 1 ? 's' : ''}</span>`
       : '';
 
-  return `<div class="builder-row ${cssClass}" onclick="this.classList.toggle('open')">
+  const rowType = cssClass.includes('builder-page') ? 'page' : 'module';
+  const selectCb = `<input type="checkbox" class="builder-select-checkbox builder-select-${rowType}" data-id="${escHtml(item.id || '')}" checked onclick="event.stopPropagation()" onchange="onBuilderSelectToggle(this)">`;
+
+  return `<div class="builder-row ${cssClass}" data-id="${escHtml(item.id || '')}" onclick="this.classList.toggle('open')">
     <div class="builder-row-header">
       <div class="builder-row-left">
+        ${selectCb}
         <span class="builder-row-chevron">&#9658;</span>
         ${swatch}
         <span class="builder-row-name">${escHtml(item.name)}</span>
         ${featureBadge}
       </div>
       <div class="builder-row-right">
-        ${diffBadge}
+        ${headerTag}
         ${totalOpenCount > 0 ? `<span class="assumption-tag">${totalOpenCount} open point${totalOpenCount > 1 ? 's' : ''}</span>` : ''}
       </div>
     </div>
@@ -1086,53 +2019,303 @@ function renderModuleRow(item, cssClass, diffOpts) {
   </div>`;
 }
 
+// Cascade: toggling a module/page checkbox cascades to child features or notes.
+function onBuilderSelectToggle(cb) {
+  const row = cb.closest('.builder-row');
+  if (!row) return;
+  if (cb.classList.contains('builder-select-module')) {
+    row.querySelectorAll('.builder-select-feature').forEach(f => { f.checked = cb.checked; });
+  } else if (cb.classList.contains('builder-select-page')) {
+    row.querySelectorAll('.builder-select-note').forEach(n => { n.checked = cb.checked; });
+  }
+}
+window.onBuilderSelectToggle = onBuilderSelectToggle;
+
 // ─── STRUCTURE ACTION HANDLER ─────────────────────────────────────────────────
 
 async function handleBuilderAction(action) {
   disablePreviousStructureCards();
 
   if (action === 'insert') {
+    // Collect unchecked ids from the most recent builder card (user-selected exclusions).
+    const cards = document.querySelectorAll('.builder-card');
+    const lastCard = cards[cards.length - 1];
+    const excludedPages    = new Set();
+    const excludedModules  = new Set();
+    const excludedFeatures = new Set();
+    const excludedNotes    = new Set();
+    if (lastCard) {
+      lastCard.querySelectorAll('.builder-select-page:not(:checked)').forEach(cb => excludedPages.add(cb.dataset.id));
+      lastCard.querySelectorAll('.builder-select-module:not(:checked)').forEach(cb => excludedModules.add(cb.dataset.id));
+      lastCard.querySelectorAll('.builder-select-feature:not(:checked)').forEach(cb => excludedFeatures.add(cb.dataset.id));
+      lastCard.querySelectorAll('.builder-select-note:not(:checked)').forEach(cb => excludedNotes.add((cb.textContent || '') + '|' + cb.dataset.id));
+    }
+
+    // Drop unchecked project notes from state so the rebuilt synthetic page reflects selection.
+    if (excludedNotes.size > 0 && Array.isArray(state._projectNotes)) {
+      const uncheckedTitles = new Set();
+      lastCard.querySelectorAll('.builder-select-note:not(:checked)').forEach(cb => {
+        const label = cb.closest('.builder-checkbox-item');
+        const titleEl = label?.querySelector('strong');
+        if (titleEl) uncheckedTitles.add((titleEl.textContent || '').trim().toLowerCase());
+      });
+      state._projectNotes = state._projectNotes.filter(n => {
+        const t = (typeof n === 'object' ? n.title : n) || '';
+        return !uncheckedTitles.has(String(t).trim().toLowerCase());
+      });
+    }
+
+    // The proposed tree came from the last generate/diff response.
+    const proposed = state._proposedStructure || {};
+    const isDiffMerge = !!proposed.diff;
+    let newCount = 0;
+    let updatedCount = 0;
+    let finalIsDiffMerge  = isDiffMerge;
+    let finalNewCount     = 0;
+    let finalUpdatedCount = 0;
+
+    let pages, sections, modules;
+
+    if (isDiffMerge) {
+      // ── Additive merge onto the committed tree. NEVER delete existing modules ──
+      const committed   = state.existing_structure || { pages: [], sections: [], modules: [] };
+      const diffNewIds     = new Set((proposed.diff.new     || []).map(m => m.id));
+      const diffUpdatedIds = new Set((proposed.diff.updated || []).map(m => m.id));
+
+      // Deep clone the committed tree as the merge base.
+      const base = JSON.parse(JSON.stringify(committed));
+      base.pages    = base.pages    || [];
+      base.sections = base.sections || [];
+      base.modules  = base.modules  || [];
+
+      // Helper — find the container array holding a module id in the base tree.
+      const findModuleContainer = (id) => {
+        for (const s of base.sections) {
+          if ((s.modules || []).some(m => m.id === id)) return s.modules;
+        }
+        if ((base.modules || []).some(m => m.id === id)) return base.modules;
+        return null;
+      };
+
+      const applyFeatureFilter = (mod) => ({
+        ...mod,
+        features: (mod.features || []).filter(f => !excludedFeatures.has(f.id)),
+      });
+
+      const applyModule = (mod, fallbackSectionId) => {
+        if (excludedModules.has(mod.id)) return; // unchecked — skip
+        const finalMod = applyFeatureFilter(mod);
+        const container = findModuleContainer(mod.id);
+        if (container) {
+          const idx = container.findIndex(x => x.id === mod.id);
+          if (idx >= 0) container[idx] = finalMod;
+          if (diffUpdatedIds.has(mod.id)) updatedCount++;
+          return;
+        }
+        // New module — add to matching section or flat.
+        if (fallbackSectionId) {
+          let targetSection = base.sections.find(s => s.id === fallbackSectionId);
+          if (!targetSection) {
+            const fromProposed = (proposed.sections || []).find(s => s.id === fallbackSectionId);
+            targetSection = { ...(fromProposed || { id: fallbackSectionId }), modules: [] };
+            base.sections.push(targetSection);
+          }
+          targetSection.modules = targetSection.modules || [];
+          targetSection.modules.push(finalMod);
+        } else {
+          base.modules.push(finalMod);
+        }
+        if (diffNewIds.has(mod.id)) newCount++;
+      };
+
+      for (const sec of (proposed.sections || [])) {
+        for (const m of (sec.modules || [])) applyModule(m, sec.id);
+      }
+      for (const m of (proposed.modules || [])) applyModule(m, null);
+
+      // Pages — additive: replace by id if matches, else append.
+      for (const p of (proposed.pages || [])) {
+        if (excludedPages.has(p.id)) continue;
+        const idx = base.pages.findIndex(x => x.id === p.id);
+        if (idx >= 0) base.pages[idx] = p;
+        else base.pages.push(p);
+      }
+
+      pages    = base.pages;
+      sections = base.sections;
+      modules  = base.modules;
+
+      // Tree dots — from the LLM's own diff entries (module type only).
+      state._treeDots = state._treeDots || {};
+      for (const m of (proposed.diff.new || [])) {
+        if (m.type === 'page') continue;
+        if (!excludedModules.has(m.id)) state._treeDots[m.id] = 'new';
+      }
+      for (const m of (proposed.diff.updated || [])) {
+        if (m.type === 'page') continue;
+        if (!excludedModules.has(m.id)) state._treeDots[m.id] = 'updated';
+      }
+
+      // Fallback — ids may not match. Recompute by comparing committed tree
+      // against the PROPOSED modules (so we see actual name/summary/assumption
+      // drift, not post-merge noise).
+      if (newCount === 0 && updatedCount === 0) {
+        const committedModMap = new Map();
+        for (const s of (committed.sections || [])) {
+          for (const m of (s.modules || [])) committedModMap.set(m.id, m);
+        }
+        for (const m of (committed.modules || [])) committedModMap.set(m.id, m);
+        const proposedModules = [
+          ...(proposed.sections || []).flatMap(s => s.modules || []),
+          ...(proposed.modules  || []),
+        ];
+        for (const m of proposedModules) {
+          if (excludedModules.has(m.id)) continue;
+          const prev = committedModMap.get(m.id);
+          if (!prev) {
+            newCount++;
+            state._treeDots[m.id] = 'new';
+          } else {
+            const prevFeatureIds = JSON.stringify((prev.features || []).map(f => f.id));
+            const newFeatureIds  = JSON.stringify((m.features    || []).map(f => f.id));
+            if (prev.name !== m.name || currentSummaryText(prev.summary) !== currentSummaryText(m.summary)
+                || JSON.stringify(prev.assumptions || []) !== JSON.stringify(m.assumptions || [])
+                || prevFeatureIds !== newFeatureIds) {
+              updatedCount++;
+              state._treeDots[m.id] = 'updated';
+            }
+          }
+        }
+      }
+
+      // Last resort — trust the LLM's diff-object lengths.
+      if (newCount === 0 && updatedCount === 0) {
+        newCount     = (proposed.diff.new     || []).filter(e => e.type !== 'page').length;
+        updatedCount = (proposed.diff.updated || []).filter(e => e.type !== 'page').length;
+      }
+
+      finalIsDiffMerge  = true;
+      finalNewCount     = newCount;
+      finalUpdatedCount = updatedCount;
+    } else {
+      // ── Normal insert: filter the PROPOSED structure by checkbox exclusions.
+      // existing_structure may be null pre-first-insert — always read from the
+      // proposed tree.
+      const srcPages    = proposed.pages    || [];
+      const srcSections = proposed.sections || [];
+      const srcModules  = proposed.modules  || [];
+
+      const filterFeatures = (features) => (features || []).filter(f => !excludedFeatures.has(f.id));
+      const filterModules  = (mods) => (mods || [])
+        .filter(m => !excludedModules.has(m.id))
+        .map(m => ({ ...m, features: filterFeatures(m.features) }));
+
+      pages    = srcPages.filter(p => !excludedPages.has(p.id));
+      modules  = filterModules(srcModules);
+      sections = srcSections
+        .map(s => ({ ...s, modules: filterModules(s.modules) }))
+        .filter(s => (s.modules || []).length > 0);
+    }
+
     state.existing_structure = {
-      pages:           (state.existing_structure?.pages    || []),
-      sections:        (state.existing_structure?.sections  || []),
-      modules:         (state.existing_structure?.modules   || []),
-      generation_type: state.existing_structure?.generation_type || 'modules',
-      confidence:      state.existing_structure?.confidence || 0,
+      pages,
+      sections,
+      modules,
+      generation_type: proposed.generation_type || state.existing_structure?.generation_type || 'modules',
+      confidence:      proposed.confidence      || state.existing_structure?.confidence      || state.project_context?.confidence || 0,
       inserted:        true,
       inserted_at:     new Date().toISOString(),
     };
+    // Merge/insert committed — drop the proposed slot.
+    state._proposedStructure = null;
     state._mode = 'chat';
     updateContextTag();
-    addAssistantMessage('Inserted into project.', resolveNextActions('[NA:BUILDER_INSERTED]'), 'insert');
+    // Collapse the inserted builder card — user can still expand it by clicking the header.
+    if (lastCard) lastCard.classList.add('collapsed');
+
+    // Frontend-generated chat response — no LLM call.
+    const genType = state.existing_structure.generation_type;
+    const totalModulesAfter = [
+      ...(state.existing_structure.sections?.flatMap(s => s.modules || []) || []),
+      ...(state.existing_structure.modules || []),
+    ].length;
+    const totalFeaturesAfter = [
+      ...(state.existing_structure.sections?.flatMap(s => s.modules || []) || []),
+      ...(state.existing_structure.modules || []),
+    ].reduce((sum, m) => sum + (m.features?.length || 0), 0);
+
+    const bullets = [
+      '• Upload more documents or meeting transcripts',
+      '• Enrich your context with discovery questions',
+      '• Generate descriptions, user stories, or estimations',
+    ].join('\n');
+
+    console.log('[Insert]', { finalIsDiffMerge, finalNewCount, finalUpdatedCount });
+
+    let headline;
+    if (finalIsDiffMerge) {
+      if (finalNewCount > 0 && finalUpdatedCount > 0) {
+        headline = `✅ ${finalNewCount} new and ${finalUpdatedCount} updated module${finalUpdatedCount !== 1 ? 's' : ''} merged into the project.`;
+      } else if (finalNewCount > 0) {
+        headline = `✅ ${finalNewCount} new module${finalNewCount !== 1 ? 's' : ''} added to the project.`;
+      } else if (finalUpdatedCount > 0) {
+        headline = `✅ ${finalUpdatedCount} module${finalUpdatedCount !== 1 ? 's' : ''} updated in the project.`;
+      } else {
+        headline = `✅ Structure merged into the project.`;
+      }
+    } else if (genType === 'modules_features' || totalFeaturesAfter > 0) {
+      headline = `✅ ${totalModulesAfter} module${totalModulesAfter !== 1 ? 's' : ''} with ${totalFeaturesAfter} feature${totalFeaturesAfter !== 1 ? 's' : ''} added to the project.`;
+    } else {
+      headline = `✅ ${totalModulesAfter} module${totalModulesAfter !== 1 ? 's' : ''} added to the project.`;
+    }
+
+    const insertMsgText = `**${headline}**\n\n**What's next?**\n\n${bullets}`;
+    addAssistantMessage({ text: insertMsgText, hint: null }, resolveNextActions(buildBuilderInsertedTag()), 'insert');
+    if (typeof renderLeftNavTree === 'function') renderLeftNavTree();
     updateStatePanel();
     return;
   }
 
   if (action === 'view_full') {
-    // Re-render as full builder card
-    renderBuilderCard({ ...state.existing_structure, status: 'completed', confidence: state.existing_structure?.confidence || 0 });
+    // Re-render as full builder card — from the in-flight proposed tree if any,
+    // else the committed tree.
+    const src = state._proposedStructure || state.existing_structure;
+    renderBuilderCard({ ...(src || {}), status: 'completed', confidence: src?.confidence || 0 });
     return;
   }
 
 
   if (action === 'discard') {
-    // Discard = throw away the generated structure. The original chat state
-    // (inputs, captured_topics, open_points, project_summary) is PRESERVED —
-    // nothing absorbed, no LLM call. A local Template-A style confirmation
-    // message is rendered directly from current state.
+    // Discard = throw away the generated/proposed structure. The original chat
+    // state (inputs, captured_topics, open_points, project_summary) is PRESERVED.
+    // existing_structure (the committed tree) is NEVER touched by discard — it
+    // only changes on insert/merge.
 
-    state.existing_structure = null;
+    // Clear whatever was on the builder/diff card.
+    state._proposedStructure = null;
+    state._resolvedAnswers = [];
     state._mode = 'chat';
     updateContextTag();
+    addUserMessage([{ type: 'text', text: 'Discarded' }]);
 
-    // Resolved answers from the (now-discarded) generation are dropped too —
-    // they belonged to the structure that was thrown away.
-    state._resolvedAnswers = [];
+    // If a structure was already inserted, we stay on the committed tree and
+    // show the post-insert NA (same as normal chat with an existing tree).
+    if (state.existing_structure?.inserted === true) {
+      addAssistantMessage(
+          { text: 'Changes discarded. Your project tree is unchanged.', hint: null },
+          resolveNextActions(buildBuilderInsertedTag()),
+          'builder_discard'
+      );
+      if (typeof renderLeftNavTree === 'function') renderLeftNavTree();
+      updateStatePanel();
+      return;
+    }
 
+    // Fresh project (no commit yet) — render the "continue with summary" recap.
     const lang    = (state.project_language || 'en').toLowerCase();
     const openings = {
       en: 'You are continuing with the current project:',
-      de: 'Du arbeitest weiterhin am aktuellen Projekt:',
+      de: '**Du arbeitest weiterhin am aktuellen Projekt:**',
       fr: 'Vous continuez avec le projet actuel :',
       es: 'Continúas con el proyecto actual:',
       it: 'Continui con il progetto attuale:',
@@ -1142,8 +2325,6 @@ async function handleBuilderAction(action) {
     };
     const opening = openings[lang] || openings.en;
     const summary = state.project_summary || '';
-
-    addUserMessage([{ type: 'text', text: 'Discarded' }]);
 
     const confidence = state.project_context?.confidence || 35;
     const nextActions = resolveNextActions(`[NA:GENERATE|CONFIDENCE:${confidence}]`);
@@ -1157,23 +2338,12 @@ async function handleBuilderAction(action) {
   }
 
   if (action === 'enrich_context') {
-    removeAllNextActions();
-    addUserMessage([{ type: 'text', text: 'Enrich Context' }]);
-    setEnrichContextSource('builder');
-    handleResponse({
-      action: 'route_to_agent',
-      agent:  'agent_interviewer',
-      handoff: {
-        mode:             'enrich_context',
-        status:           'start',
-        answers:          [],
-        platform_type:    state.project_context?.platform_type || null,
-        project_summary:  state.project_summary,
-        project_context:  state.project_context,
-        captured_topics:  state._capturedTopics || [],
-        existing_modules: (state.existing_structure?.sections || []).flatMap(s => s.modules || []),
-      },
-    }, null);
+    state._enrichDepthSource = 'builder';
+    const na = resolveNextActions('[NA:ENRICH_DEPTH]');
+    if (na) {
+      renderNextActions(na);
+      if (typeof activateFirstNaBtn === 'function') activateFirstNaBtn();
+    }
     return;
   }
 
@@ -1186,8 +2356,9 @@ async function handleBuilderAction(action) {
       return;
     }
 
-    // Collect assumptions from modules + features (frontend-built, not from LLM global_assumptions)
-    const existing = state.existing_structure || {};
+    // Collect assumptions from modules + features of the CURRENT builder card
+    // (the proposed tree) — resolve runs while iterating on the card, before commit.
+    const existing = state._proposedStructure || state.existing_structure || {};
     const allModules = [
       ...(existing.pages || []),
       ...(existing.sections || []).flatMap(s => s.modules || []),
@@ -1202,19 +2373,18 @@ async function handleBuilderAction(action) {
     if (globalAssumptions.length === 0) return;
 
     try {
-      const payload = {
-        to_agent:           'agent_interviewer',
+      // INTERVIEW solve_open_points — convert the local "assumptions" naming
+      // back to the prompt's "global_open_points" slot. Each item must be
+      // { text, element_name, element_id } per the prompt spec; the local
+      // collection is flat strings, so wrap them.
+      const global_open_points = globalAssumptions.map(t => ({ text: t, element_name: null, element_id: null }));
+      const payload = payloadForInterview({
         mode:               'solve_open_points',
-        global_assumptions: globalAssumptions,
-        project_summary:    state.project_summary,
-        project_context:    state.project_context,
-        existing_structure: state.existing_structure,
-        open_points:        state._openPoints || [],
-        resolved_points:    state._resolvedPoints || [],
-        project_language:   state.project_language || null,
-      };
+        phase:              'questions',
+        global_open_points,
+      });
 
-      const response = await callAgent('agent_interviewer', payload);
+      const response = await callAgent('interview', payload);
 
       if (response.status === 'questions_ready' && response.open_questions?.length > 0) {
         // Filter out enrich_topics — after resolve, regenerate directly without enrich step
@@ -1333,26 +2503,45 @@ async function submitResolvedAssumptions() {
     const resolveAnswers = answers.filter(a => !a.id?.startsWith('eq_') && a.id !== 'enrich_topics');
     const enrichAnswers  = answers.filter(a => a.id?.startsWith('eq_'));
 
-    const payload = {
-      to_agent:           'agent_builder',
-      generation_type:    genType,
-      mode:               'resolve',
-      resolve_questions:  resolveAnswers,
-      enrich_answers:     enrichAnswers.length > 0 ? enrichAnswers : [],
-      inputs:             state.inputs,
-      project_summary:    state.project_summary,
-      project_context:    state.project_context,
-      existing_structure: state.existing_structure,
-      resolved_points:    state._resolvedPoints || [],
-      open_points:        state._openPoints || [],
-      project_language:   state.project_language || null,
-    };
+    const payload = payloadForBuilder({
+      mode:              'resolve',
+      generation_type:   genType,
+      resolve_questions: resolveAnswers,
+    });
+    // enrich answers (interview→builder handoff) aren't part of the prompt
+    // INPUT spec — keep as a side-slot only when there's something to pass.
+    if (enrichAnswers.length > 0) payload.enrich_answers = enrichAnswers;
 
-    const response = await callAgent('agent_builder', payload);
-    await handleAgentResponse('agent_builder', response);
+    const response = await callAgent('builder', payload);
+    await handleAgentResponse('builder', response);
   } catch (err) {
     if (err.name !== 'AbortError') addErrorMessage(err.message);
   }
 }
 // Expose for cross-file access
 window.handleAgentResponse = handleAgentResponse;
+
+// Toggle collapse/expand of a builder card when its header is clicked.
+function toggleBuilderCard(headerEl) {
+  const card = headerEl.closest('.builder-card');
+  if (card) card.classList.toggle('collapsed');
+}
+window.toggleBuilderCard = toggleBuilderCard;
+
+// Toggle show/hide for the overflow open-points list in the builder card footer.
+function toggleAssumptions(btn) {
+  const wrap = btn.previousElementSibling?.querySelector('.assumption-hidden');
+  if (!wrap) return;
+  const more = Number(btn.dataset.more || 0);
+  const expanded = btn.dataset.expanded === '1';
+  if (expanded) {
+    wrap.style.display = 'none';
+    btn.textContent = `Show ${more} more`;
+    btn.dataset.expanded = '0';
+  } else {
+    wrap.style.display = 'contents';
+    btn.textContent = 'Show less';
+    btn.dataset.expanded = '1';
+  }
+}
+window.toggleAssumptions = toggleAssumptions;

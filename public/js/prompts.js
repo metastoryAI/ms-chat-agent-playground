@@ -3,7 +3,7 @@
 // Ensure every agent×provider combo has a saved model in localStorage at startup.
 // This guarantees getModelForAgent() never has to fall back to the global model.
 (function initAgentModelDefaults() {
-  const agents    = ['agent_chat', 'agent_builder', 'agent_interviewer'];
+  const agents    = ['intent_router', 'analyze', 'answer', 'clarify', 'query', 'mutation', 'builder', 'interview'];
   const providers = ['anthropic', 'openai', 'gemini', 'kimi'];
   agents.forEach(agent => {
     providers.forEach(p => {
@@ -16,107 +16,165 @@
   });
 })();
 
-let currentPromptTab = 'agent_chat';
+let currentPromptTab = 'intent_router';
 let prompts = {
-  agent_chat:                     'Loading...',
-  agent_builder:                  'Loading...',
-  agent_interviewer:              'Loading...',
-  // Builder modes
-  generate_modules:               '',
-  generate_modules_features:      '',
-  generate_pages:                 '',
-  refine:                         '',
-  resolve:                        '',
-  diff:                           '',
-  // Interviewer modes
-  solve_open_points:              '',
-  enrich_context:                 '',
-  // Chat rules
-  chat_rules_input_detection:     '',
-  chat_rules_confidence:          '',
-  chat_rules_next_actions_tags:   '',
-  chat_rules_command_routing:     '',
-  // Chat templates
-  chat_templates_responses:       '',
-  // Chat actions
-  chat_action_analyze_document:   '',
-  chat_action_analyze_input:      '',
-  chat_action_answer:             '',
-  chat_action_route:              '',
-  chat_action_add_input:          '',
-  chat_action_modify_input:       '',
-  chat_action_remove_input:       '',
-  chat_action_clarify:            '',
-  extract_open_points:            '',
+  // Top-level standalone agents (one tab each)
+  intent_router:                          'Loading...',
+  answer:                                 'Loading...',
+  clarify:                                'Loading...',
+  query:                                  'Loading...',
+  mutation:                               'Loading...',
+  // Composite agent bases (one tab each)
+  analyze_base:                           'Loading...',
+  builder_base:                           'Loading...',
+  interview_base:                         'Loading...',
+  // ANALYZE conditional rules + actions (composed by variant_key)
+  analyze_rule_next_actions_tags:         '',
+  analyze_rule_project_context:           '',
+  analyze_rule_target_keywords:           '',
+  analyze_rule_post_insert_routing:       '',
+  analyze_action_analyze_document:        '',
+  analyze_action_analyze_input:           '',
+  analyze_action_add_input:               '',
+  analyze_action_modify_input:            '',
+  analyze_action_remove_input:            '',
+  analyze_action_extract_details:         '',
+  // BUILDER always-loaded rules + per-mode files
+  builder_rule_module_naming:             '',
+  builder_rule_confidence:                '',
+  builder_rule_summary_style:             '',
+  builder_rule_resolved_points:           '',
+  builder_rule_gaps:                      '',
+  builder_rule_context_enrichment:        '',
+  builder_mode_generate_modules:          '',
+  builder_mode_generate_modules_features: '',
+  builder_mode_generate_pages:            '',
+  builder_mode_add_features:              '',
+  builder_mode_add_subfeatures:           '',
+  builder_mode_resolve:                   '',
+  builder_mode_diff:                      '',
+  // INTERVIEW per-mode files
+  interview_mode_solve_open_points:       '',
+  interview_mode_enrich_context:          '',
 };
 
 const PROMPT_FILES = {
-  agent_chat:                     '/prompts/agents/agent-chat.md',
-  agent_builder:                  '/prompts/agents/agent-builder.md',
-  agent_interviewer:              '/prompts/agents/agent-interviewer.md',
-  // Builder modes
-  generate_modules:               '/prompts/modes/builder/generate/modules.md',
-  generate_modules_features:      '/prompts/modes/builder/generate/modules-features.md',
-  generate_pages:                 '/prompts/modes/builder/generate/pages.md',
-  refine:                         '/prompts/modes/builder/edit/refine.md',
-  resolve:                        '/prompts/modes/builder/edit/resolve.md',
-  diff:                           '/prompts/modes/builder/compare/diff.md',
-  // Interviewer modes
-  solve_open_points:              '/prompts/modes/interviewer/solve-open-points.md',
-  enrich_context:                 '/prompts/modes/interviewer/enrich-context.md',
-  // Chat rules
-  chat_rules_input_detection:     '/prompts/modes/chat/rules/input-detection.md',
-  chat_rules_confidence:          '/prompts/modes/chat/rules/confidence.md',
-  chat_rules_next_actions_tags:   '/prompts/modes/chat/rules/next-actions-tags.md',
-  chat_rules_command_routing:     '/prompts/modes/chat/rules/command-routing.md',
-  // Chat templates
-  chat_templates_responses:       '/prompts/modes/chat/templates/chat-responses.md',
-  // Chat actions
-  chat_action_analyze_document:   '/prompts/modes/chat/actions/analyze-document.md',
-  chat_action_analyze_input:      '/prompts/modes/chat/actions/analyze-input.md',
-  chat_action_answer:             '/prompts/modes/chat/actions/answer.md',
-  chat_action_route:              '/prompts/modes/chat/actions/route.md',
-  chat_action_add_input:          '/prompts/modes/chat/actions/add-input.md',
-  chat_action_modify_input:       '/prompts/modes/chat/actions/modify-input.md',
-  chat_action_remove_input:       '/prompts/modes/chat/actions/remove-input.md',
-  chat_action_clarify:            '/prompts/modes/chat/actions/clarify.md',
-  extract_open_points:            '/prompts/modes/chat/actions/extract-open-points.md',
+  // Top-level standalone agents
+  intent_router:                          '/prompts/INTENT_ROUTER_AGENT.md',
+  answer:                                 '/prompts/ANSWER_AGENT.md',
+  clarify:                                '/prompts/CLARIFY_AGENT.md',
+  query:                                  '/prompts/QUERY_AGENT.md',
+  mutation:                               '/prompts/MUTATION_AGENT.md',
+  // Composite agent bases
+  analyze_base:                           '/prompts/ANALYZE/ANALYZE_AGENT_PROMPT.md',
+  builder_base:                           '/prompts/BUILDER/BUILDER_AGENT_PROMPT.md',
+  interview_base:                         '/prompts/INTERVIEW/INTERVIEW_AGENT_PROMPT.md',
+  // ANALYZE rules + actions
+  analyze_rule_next_actions_tags:         '/prompts/ANALYZE/ANALYZE_RULE_NEXT_ACTIONS_TAGS.md',
+  analyze_rule_project_context:           '/prompts/ANALYZE/ANALYZE_RULE_PROJECT_CONTEXT.md',
+  analyze_rule_target_keywords:           '/prompts/ANALYZE/ANALYZE_RULE_TARGET_KEYWORDS.md',
+  analyze_rule_post_insert_routing:       '/prompts/ANALYZE/ANALYZE_RULE_POST_INSERT_ROUTING.md',
+  analyze_action_analyze_document:        '/prompts/ANALYZE/ANALYZE_ACTION_ANALYZE_DOCUMENT.md',
+  analyze_action_analyze_input:           '/prompts/ANALYZE/ANALYZE_ACTION_ANALYZE_INPUT.md',
+  analyze_action_add_input:               '/prompts/ANALYZE/ANALYZE_ACTION_ADD_INPUT.md',
+  analyze_action_modify_input:            '/prompts/ANALYZE/ANALYZE_ACTION_MODIFY_INPUT.md',
+  analyze_action_remove_input:            '/prompts/ANALYZE/ANALYZE_ACTION_REMOVE_INPUT.md',
+  analyze_action_extract_details:         '/prompts/ANALYZE/ANALYZE_ACTION_EXTRACT_DETAILS.md',
+  // BUILDER rules + modes
+  builder_rule_module_naming:             '/prompts/BUILDER/BUILDER_RULE_MODULE_NAMING.md',
+  builder_rule_confidence:                '/prompts/BUILDER/BUILDER_RULE_CONFIDENCE.md',
+  builder_rule_summary_style:             '/prompts/BUILDER/BUILDER_RULE_SUMMARY_STYLE.md',
+  builder_rule_resolved_points:           '/prompts/BUILDER/BUILDER_RULE_RESOLVED_POINTS.md',
+  builder_rule_gaps:                      '/prompts/BUILDER/BUILDER_RULE_GAPS.md',
+  builder_rule_context_enrichment:        '/prompts/BUILDER/BUILDER_RULE_CONTEXT_ENRICHMENT.md',
+  builder_mode_generate_modules:          '/prompts/BUILDER/BUILDER_MODE_GENERATE_MODULES.md',
+  builder_mode_generate_modules_features: '/prompts/BUILDER/BUILDER_MODE_GENERATE_MODULES_FEATURES.md',
+  builder_mode_generate_pages:            '/prompts/BUILDER/BUILDER_MODE_GENERATE_PAGES.md',
+  builder_mode_add_features:              '/prompts/BUILDER/BUILDER_MODE_ADD_FEATURES.md',
+  builder_mode_add_subfeatures:           '/prompts/BUILDER/BUILDER_MODE_ADD_SUBFEATURES.md',
+  builder_mode_resolve:                   '/prompts/BUILDER/BUILDER_MODE_RESOLVE.md',
+  builder_mode_diff:                      '/prompts/BUILDER/BUILDER_MODE_DIFF.md',
+  // INTERVIEW modes
+  interview_mode_solve_open_points:       '/prompts/INTERVIEW/INTERVIEW_MODE_SOLVE_OPEN_POINTS.md',
+  interview_mode_enrich_context:          '/prompts/INTERVIEW/INTERVIEW_MODE_ENRICH_CONTEXT.md',
 };
 
-// Dynamic chat mode files — only include what's needed for this call.
-// Reduces prompt size by ~60% on first call.
-function getChatModeFiles(hasDocuments) {
-  const hasInputs = state.inputs.length > 0;
+// ANALYZE composition — conditional loading driven by the router's variant_key.
+// Always-loaded core (base + tag rules + project_context rule) + exactly one
+// ACTION file + a few state-conditional rules.
+const ANALYZE_ACTION_FILES = {
+  analyze_document: 'analyze_action_analyze_document',
+  analyze_input:    'analyze_action_analyze_input',
+  add_input:        'analyze_action_add_input',
+  modify_input:     'analyze_action_modify_input',
+  remove_input:     'analyze_action_remove_input',
+  extract_details:  'analyze_action_extract_details',
+};
+const ANALYZE_ALWAYS = ['analyze_base', 'analyze_rule_next_actions_tags', 'analyze_rule_project_context'];
+const TARGET_KEYWORD_VARIANTS = new Set(['add_input', 'modify_input', 'remove_input']);
 
-  // Always included — core routing and formatting
-  const files = [
-    'chat_rules_input_detection',
-    'chat_rules_confidence',
-    'chat_rules_next_actions_tags',
-    'chat_rules_command_routing',
-    'chat_templates_responses',
-  ];
-
-  // Document vs text input — mutually exclusive
-  if (hasDocuments) {
-    files.push('chat_action_analyze_document');
+function composeAnalyzePromptKeys(variantKey) {
+  const keys = [...ANALYZE_ALWAYS];
+  if (variantKey && ANALYZE_ACTION_FILES[variantKey]) {
+    keys.push(ANALYZE_ACTION_FILES[variantKey]);
+    if (TARGET_KEYWORD_VARIANTS.has(variantKey)) keys.push('analyze_rule_target_keywords');
   } else {
-    files.push('chat_action_analyze_input');
+    // Fallback — no variant from router. Load every action file.
+    for (const v of Object.values(ANALYZE_ACTION_FILES)) keys.push(v);
+    keys.push('analyze_rule_target_keywords');
   }
-
-  // Always needed for routing
-  files.push('chat_action_route');
-
-  // Only after first input exists
-  if (hasInputs) {
-    files.push('chat_action_answer');
-    files.push('chat_action_clarify');
-    files.push('chat_action_add_input');
-    files.push('chat_action_modify_input');
-    files.push('chat_action_remove_input');
+  if (typeof state !== 'undefined' && state && state.existing_structure) {
+    keys.push('analyze_rule_post_insert_routing');
   }
+  return keys;
+}
 
-  return files;
+// BUILDER composition — base + always-loaded rules + one mode file.
+const BUILDER_ALWAYS = [
+  'builder_base',
+  'builder_rule_module_naming',
+  'builder_rule_confidence',
+  'builder_rule_summary_style',
+  'builder_rule_resolved_points',
+  'builder_rule_gaps',
+  'builder_rule_context_enrichment',
+];
+const BUILDER_MODE_FILES = {
+  generate_modules:          'builder_mode_generate_modules',
+  generate_modules_features: 'builder_mode_generate_modules_features',
+  generate_pages:            'builder_mode_generate_pages',
+  add_features:              'builder_mode_add_features',
+  add_subfeatures:           'builder_mode_add_subfeatures',
+  resolve:                   'builder_mode_resolve',
+  diff:                      'builder_mode_diff',
+};
+
+// Modes that bundle the documentary pages output alongside their primary slot.
+// Per BUILDER_AGENT_PROMPT.md: generate_modules / generate_modules_features /
+// generate_pages always emit `pages[]`, so the pages-mode rules need to be in
+// the system prompt for those calls. resolve / diff do NOT emit pages[].
+const BUILDER_MODES_WITH_PAGES = new Set(['generate_modules', 'generate_modules_features']);
+
+function composeBuilderPromptKeys(mode) {
+  const keys = [...BUILDER_ALWAYS];
+  if (mode && BUILDER_MODE_FILES[mode]) keys.push(BUILDER_MODE_FILES[mode]);
+  // Append the pages-mode prompt for fresh-generation modes so the LLM also
+  // produces `pages[]` in the same call.
+  if (BUILDER_MODES_WITH_PAGES.has(mode)) keys.push('builder_mode_generate_pages');
+  return keys;
+}
+
+// INTERVIEW composition — base + one mode file.
+const INTERVIEW_ALWAYS = ['interview_base'];
+const INTERVIEW_MODE_FILES = {
+  solve_open_points: 'interview_mode_solve_open_points',
+  enrich_context:    'interview_mode_enrich_context',
+};
+
+function composeInterviewPromptKeys(mode) {
+  const keys = [...INTERVIEW_ALWAYS];
+  if (mode && INTERVIEW_MODE_FILES[mode]) keys.push(INTERVIEW_MODE_FILES[mode]);
+  return keys;
 }
 
 async function loadPrompts() {
@@ -151,17 +209,33 @@ function closeModalOnOverlay(e) {
   if (e.target === document.getElementById('prompts-modal')) closePromptsModal();
 }
 
+const PROMPT_MODAL_TABS = ['intent_router', 'analyze_base', 'answer', 'clarify', 'query', 'mutation', 'builder_base', 'interview_base'];
+
+// Map a modal tab key to the agent's canonical key (used by callAgent / getModelForAgent).
+// Composite agents store the base file under "<agent>_base" but the agent key itself
+// drops the suffix.
+const TAB_TO_AGENT_KEY = {
+  intent_router:  'intent_router',
+  analyze_base:   'analyze',
+  answer:         'answer',
+  clarify:        'clarify',
+  query:          'query',
+  mutation:       'mutation',
+  builder_base:   'builder',
+  interview_base: 'interview',
+};
+
 function showPromptTab(key) {
   currentPromptTab = key;
   const promptTabs = document.querySelectorAll('#prompts-modal .mtab');
   promptTabs.forEach(t => t.classList.remove('active'));
-  const tabs = ['agent_chat', 'agent_builder', 'agent_interviewer'];
-  const idx = tabs.indexOf(key);
+  const idx = PROMPT_MODAL_TABS.indexOf(key);
   if (idx !== -1 && promptTabs[idx]) promptTabs[idx].classList.add('active');
   document.getElementById('prompt-editor').value = prompts[key] || '';
   document.getElementById('saved-badge').style.display = 'none';
   renderTOC(prompts[key] || '');
-  renderAgentModelSidebar(key);
+  // Model selector keys off the agent's canonical name, not the file storage key.
+  renderAgentModelSidebar(TAB_TO_AGENT_KEY[key] || key);
 }
 
 function renderTOC(text) {
@@ -213,8 +287,9 @@ function renderAgentModelSidebar(agentKey) {
 
 function setAgentModel(agentKey, providerKey, modelId) {
   localStorage.setItem(`ms_agent_model_${agentKey}_${providerKey}`, modelId);
-  // If this is agent_chat and the current provider matches → sync toolbar label
-  if (agentKey === 'agent_chat' && providerKey === provider) {
+  // If this is intent_router and the current provider matches → sync toolbar label.
+  // Intent router drives the toolbar model since it's the entry point.
+  if (agentKey === 'intent_router' && providerKey === provider) {
     selectedModel = modelId;
     updateModelLabel();
     updateStatePanel();
@@ -256,52 +331,6 @@ async function savePrompt() {
   setTimeout(() => { badge.style.display = 'none'; }, 2000);
 }
 
-
-// ─── AGENT PROMPTS ────────────────────────────────────────────────────────────
-
-// Builder mode → ordered list of prompt dict keys to bundle into one call.
-// Multi-key entries concatenate all files + append a merge footer so the LLM
-// returns one merged JSON object instead of the per-file atomic shape.
-const BUILDER_MODE_PROMPTS = {
-  generate:          ['generate_pages', 'generate_modules'],          // bundled: pages + modules
-  generate_features: ['generate_pages', 'generate_modules_features'], // bundled: pages + modules+features
-  generate_pages:    ['generate_pages'],                              // atomic (tree-flow friendly)
-  refine:            ['refine'],
-  resolve:           ['resolve'],
-  diff:              ['diff'],
-};
-
-// Interviewer mode → ordered list of prompt dict keys
-const INTERVIEWER_MODE_PROMPTS = {
-  solve_open_points: ['solve_open_points'],
-  enrich_context:    ['enrich_context'],
-};
-
-// Which top-level output slot each mode file populates.
-// Used to build the merge footer when multiple files are bundled.
-const MODE_SLOT = {
-  generate_pages:            'pages',
-  generate_modules:          'sections',
-  generate_modules_features: 'sections',
-};
-
-function buildMergeFooter(slotNames) {
-  const slotLines = slotNames.map(s => `  "${s}": [ ... from the ${s.toUpperCase()} section above ]`).join(',\n');
-  return `---
-
-## FINAL OUTPUT (bundled call)
-
-The sections above describe multiple output slots. Your response MUST be ONE JSON object merging all slots:
-
-\`\`\`json
-{
-  "status": "completed",
-${slotLines}
-}
-\`\`\`
-
-Ignore any "Return only" instructions in the individual sections — those apply when a section is sent alone. When bundled, combine all outputs into one JSON object with the exact shape above.`;
-}
 
 // ─── BACKEND TAB — live prompt composition tracking ─────────────────────────
 
@@ -385,32 +414,53 @@ function clearPromptHistory() {
 }
 
 function getPromptForAgent(agent, mode) {
-  if (agent === 'agent_builder' && mode && BUILDER_MODE_PROMPTS[mode]) {
-    const subKeys = BUILDER_MODE_PROMPTS[mode];
-    recordPromptComposition(agent, mode, ['agent_builder', ...subKeys]);
-    const parts = [prompts['agent_builder']];
-    for (const k of subKeys) parts.push(prompts[k] || '');
-    if (subKeys.length > 1) {
-      const slots = [...new Set(subKeys.map(k => MODE_SLOT[k]).filter(Boolean))];
-      if (slots.length > 0) parts.push(buildMergeFooter(slots));
+  // Intent router — single file, no composition.
+  if (agent === 'intent_router') {
+    recordPromptComposition('intent_router', null, ['intent_router']);
+    return prompts.intent_router;
+  }
+  // Standalone agents — single file each.
+  if (agent === 'answer')   { recordPromptComposition('answer',   null, ['answer']);   return prompts.answer; }
+  if (agent === 'query')    { recordPromptComposition('query',    null, ['query']);    return prompts.query; }
+  if (agent === 'mutation') { recordPromptComposition('mutation', null, ['mutation']); return prompts.mutation; }
+  // Clarify — variant carried in payload (clarify_variant); prompt is single file.
+  if (agent === 'clarify') {
+    recordPromptComposition('clarify', mode, ['clarify']);
+    return prompts.clarify;
+  }
+  // Composite — analyze (variant_key drives action selection).
+  if (agent === 'analyze') {
+    const keys = composeAnalyzePromptKeys(mode);
+    recordPromptComposition('analyze', mode, keys);
+    return keys.map(k => prompts[k]).filter(Boolean).join('\n\n');
+  }
+  // Composite — builder (mode drives mode-file selection).
+  if (agent === 'builder') {
+    const keys = composeBuilderPromptKeys(mode);
+    recordPromptComposition('builder', mode, keys);
+    let composed = keys.map(k => prompts[k]).filter(Boolean).join('\n\n');
+    // Override footer — resolves the conflict between the modules-mode rule
+    // ("never emit pages[]") and the bundled pages-mode rule ("emit pages[]").
+    // When bundling, both modes are present in the system prompt; without this
+    // footer the modules rule wins and pages[] never appears in the response.
+    if (BUILDER_MODES_WITH_PAGES.has(mode)) {
+      composed += '\n\n## BUNDLED OUTPUT — OVERRIDE\n' +
+        'This call bundles `BUILDER_MODE_GENERATE_PAGES.md` with `' +
+        (mode === 'generate_modules_features' ? 'BUILDER_MODE_GENERATE_MODULES_FEATURES' : 'BUILDER_MODE_GENERATE_MODULES') +
+        '.md`. ' +
+        'Ignore any "never emit `pages[]`" wording in the modules-mode file — that wording assumes a parallel-call architecture which is no longer used. ' +
+        'In this bundled call you MUST emit BOTH `modules[]` (per the modules-mode rules) AND `pages[]` (per the pages-mode rules) in the SAME response object. ' +
+        'Apply both rule sets independently and merge the slots into one envelope.';
     }
-    return parts.join('\n\n');
+    return composed;
   }
-  if (agent === 'agent_interviewer' && mode && INTERVIEWER_MODE_PROMPTS[mode]) {
-    const subKeys = INTERVIEWER_MODE_PROMPTS[mode];
-    recordPromptComposition(agent, mode, ['agent_interviewer', ...subKeys]);
-    const parts = [prompts['agent_interviewer']];
-    for (const k of subKeys) parts.push(prompts[k] || '');
-    return parts.join('\n\n');
+  // Composite — interview (mode drives mode-file selection).
+  if (agent === 'interview') {
+    const keys = composeInterviewPromptKeys(mode);
+    recordPromptComposition('interview', mode, keys);
+    return keys.map(k => prompts[k]).filter(Boolean).join('\n\n');
   }
-  if (agent === 'agent_chat') {
-    const hasDocuments = pendingFiles.some(f => f.text);
-    const modeFiles = getChatModeFiles(hasDocuments);
-    const keys = ['agent_chat', ...modeFiles.filter(k => prompts[k])];
-    recordPromptComposition(agent, mode, keys);
-    return keys.map(k => prompts[k]).join('\n\n');
-  }
-  const fallback = prompts[agent] ? agent : 'agent_chat';
-  recordPromptComposition(agent, mode, [fallback]);
-  return prompts[fallback];
+  // Fallback — unknown agent → intent_router (entry point).
+  recordPromptComposition(agent, mode, ['intent_router']);
+  return prompts.intent_router;
 }

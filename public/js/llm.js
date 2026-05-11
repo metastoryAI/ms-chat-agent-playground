@@ -31,20 +31,32 @@ function parseJSON(raw) {
 /**
  * Prepend extracted document text to the state JSON message.
  * Supports multiple files — each becomes its own [DOCUMENT: name] block.
+ *
+ * For `intent_router`: include only the [DOCUMENT: name] header, NOT the body.
+ * The router only needs to know a file is attached to pick the right intent;
+ * sending the full text wastes ~all of the doc's tokens on a routing decision
+ * (and can mislead the router with content noise).
  */
-function buildUserMessage(stateMsg) {
+function buildUserMessage(stateMsg, agentKey) {
   const withText = pendingFiles.filter(f => f.text);
   if (withText.length === 0) return stateMsg;
+
+  if (agentKey === 'intent_router') {
+    const headers = withText.map(f => `[DOCUMENT: ${f.file.name}]`);
+    console.log('[LLM] injecting', withText.length, 'document header(s) for intent_router (body skipped)');
+    return headers.join('\n') + '\n\n' + stateMsg;
+  }
+
   const blocks = withText.map(f => `[DOCUMENT: ${f.file.name}]\n\n${f.text}`);
   const totalChars = withText.reduce((n, f) => n + f.text.length, 0);
-  console.log('[LLM] injecting', withText.length, 'document(s),', totalChars, 'chars total');
+  console.log('[LLM] injecting', withText.length, 'document(s),', totalChars, 'chars total for', agentKey || 'unknown');
   return blocks.join('\n\n') + '\n\n' + stateMsg;
 }
 
 // ─── Low-level provider calls (internal — use callAgent instead) ─────────────
 
 async function _callProvider(key, userMsg, agentKey, signal) {
-  const content = buildUserMessage(userMsg);
+  const content = buildUserMessage(userMsg, agentKey);
   const model   = getModelForAgent(agentKey);
   // Extract mode from payload for sub-prompt selection
   let mode = null;
@@ -124,7 +136,7 @@ async function _callProvider(key, userMsg, agentKey, signal) {
 /**
  * Call an LLM agent with full lifecycle management.
  *
- * @param {string} agentKey   - 'agent_chat' | 'agent_builder' | 'agent_interviewer'
+ * @param {string} agentKey   - 'intent_router' | 'analyze' | 'answer' | 'clarify' | 'query' | 'mutation' | 'builder' | 'interview'
  * @param {object} payload    - The state/payload object to send
  * @param {object} [opts]     - Options
  * @param {boolean} [opts.showLoading=true]  - Show/remove loading spinner
@@ -171,8 +183,9 @@ async function callAgent(agentKey, payload, opts = {}) {
   }
 }
 
-// Legacy compat — used by sendMessage in chat.js for the initial chat call
-async function callLLM(key, payload, agentKey = 'agent_chat') {
+// Legacy compat — used for one-shot calls that bypass callAgent's lifecycle wrapper.
+// Defaults to intent_router (the entry point for every user message).
+async function callLLM(key, payload, agentKey = 'intent_router') {
   const userMsg = JSON.stringify(payload, null, 2);
   return _callProvider(key, userMsg, agentKey, activeAbortController?.signal);
 }

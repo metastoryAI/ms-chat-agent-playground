@@ -3,8 +3,9 @@
 
 function populateModelSelect() {
   const models = PROVIDER_MODELS[provider] || [];
-  // Prefer the agent_chat-specific model for this provider, fallback to global saved
-  const agentSaved  = localStorage.getItem(`ms_agent_model_agent_chat_${provider}`);
+  // Prefer the intent_router-specific model for this provider, fallback to global saved.
+  // Intent router is the entry point for every message — its model drives the toolbar.
+  const agentSaved  = localStorage.getItem(`ms_agent_model_intent_router_${provider}`);
   const globalSaved = localStorage.getItem('ms_model_' + provider);
   const resolved    = (agentSaved && models.find(m => m.id === agentSaved)) ? agentSaved : globalSaved;
   selectedModel = resolved || models[0]?.id || null;

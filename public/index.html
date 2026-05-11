@@ -51,6 +51,16 @@
     </div>
   </div>
 
+  <!-- LEFT NAV (between activity-bar and chat) -->
+  <div class="left-nav" id="left-nav">
+    <button class="ln-item ln-chat active" id="ln-chat-btn" onclick="showChatView()" title="Chat">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 4a2 2 0 012-2h8a2 2 0 012 2v6a2 2 0 01-2 2H6l-3 3v-3H4a2 2 0 01-2-2V4z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+      <span>Chat</span>
+    </button>
+    <div class="ln-tree" id="ln-tree" style="display:none;"></div>
+    <div class="left-nav-resize" id="left-nav-resize"></div>
+  </div>
+
   <!-- CHAT PANEL -->
   <div class="chat-panel">
 
@@ -59,14 +69,14 @@
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1.5 6a4.5 4.5 0 018.4-2.2M10.5 6a4.5 4.5 0 01-8.4 2.2M10.5 1.5v2.3h-2.3M1.5 10.5V8.2h2.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="chat-action-btn-label">Clear Chat</span>
       </button>
-      <button class="chat-action-btn" onclick="openGuideModal()">
-        <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M6.5 5.5v4M6.5 4a.5.5 0 100-1 .5.5 0 000 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-        <span class="chat-action-btn-label">Guide</span>
-      </button>
       <button class="chat-action-btn" onclick="openPromptsModal()">
         <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><rect x="1" y="1" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 4.5h6M3.5 6.5h6M3.5 8.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
         <span class="chat-action-btn-label">Prompts</span>
       </button>
+      <a class="chat-action-btn" href="docs.html" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 13 13" fill="none"><path d="M3 1.5h5.5L11 4v7.5H3v-10z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.5 1.5V4H11M5 7h3.5M5 9h3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <span class="chat-action-btn-label">Docs</span>
+      </a>
     </div>
 
     <div class="messages-scroll" id="messages-scroll">
@@ -78,6 +88,8 @@
         </div>
       </div>
     </div>
+
+    <div class="detail-view" id="detail-view" style="display:none;"></div>
 
     <div class="input-area" id="cb-widget-area">
       <div id="cb-widget" style="display:none;" class="cb-widget-container"></div>
@@ -91,7 +103,7 @@
           </div>
           <div id="file-preview" style="display:none;" class="file-preview"></div>
           <div class="input-wrap">
-            <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)" oninput="onInputChange(this)"></textarea>
+            <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)" oninput="onInputChange(this)" onpaste="onUserInputPaste(event)"></textarea>
           </div>
           <div id="next-actions-bar" style="display:none;"></div>
           <div class="input-row">
@@ -111,6 +123,15 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- PROJECT CONTEXT PANEL (overlays sidebar) -->
+  <div class="project-context-panel" id="project-context-panel" style="display:none;">
+    <div class="pcp-header">
+      <span class="pcp-title">Project Context</span>
+      <button class="pcp-close" onclick="closeProjectContextPanel()" title="Close">×</button>
+    </div>
+    <div class="pcp-body" id="pcp-body"></div>
   </div>
 
   <!-- SIDEBAR -->
@@ -234,210 +255,6 @@
 
 </div>
 
-<!-- GUIDE MODAL -->
-<div class="modal-overlay" id="guide-modal" onclick="closeGuideOnOverlay(event)">
-  <div class="guide-modal">
-    <div class="modal-header">
-      <span class="modal-title">System Guide</span>
-      <button class="modal-close" onclick="closeGuideModal()">×</button>
-    </div>
-    <div class="modal-tabs">
-      <div class="mtab active" onclick="showGuideTab('g-overview')">Overview</div>
-      <div class="mtab" onclick="showGuideTab('g-chat')">Chat Agent</div>
-      <div class="mtab" onclick="showGuideTab('g-structure')">Structure Generator</div>
-    </div>
-
-    <!-- OVERVIEW -->
-    <div class="guide-body" id="g-overview">
-      <div class="guide-section">
-        <div class="guide-section-title">How it works</div>
-        <div class="guide-flow">
-          <div class="guide-flow-step">
-            <div class="guide-flow-num">1</div>
-            <div><div class="guide-flow-label">User input</div><div class="guide-flow-sub">Text message or PDF upload — pdf.js extracts text page-by-page into structured blocks</div></div>
-          </div>
-          <div class="guide-flow-step">
-            <div class="guide-flow-num">2</div>
-            <div><div class="guide-flow-label">Build message</div><div class="guide-flow-sub"><code>[DOCUMENT: file.pdf] &lt;PARSED TEXT FOR PAGE: 1/N&gt;...</code> prepended to the state JSON</div></div>
-          </div>
-          <div class="guide-flow-step">
-            <div class="guide-flow-num">3</div>
-            <div><div class="guide-flow-label">LLM call → Chat Agent</div><div class="guide-flow-sub">System prompt + message sent to selected provider. Returns JSON with <code>action</code> field</div></div>
-          </div>
-          <div class="guide-flow-step">
-            <div class="guide-flow-num">4</div>
-            <div><div class="guide-flow-label">Frontend handles response</div><div class="guide-flow-sub">Updates in-memory state, renders message or structure card, may route to a second agent</div></div>
-          </div>
-          <div class="guide-flow-step">
-            <div class="guide-flow-num">5</div>
-            <div><div class="guide-flow-label">Agent routing (optional)</div><div class="guide-flow-sub">Chat Agent can route to Structure Generator or Context Updater — new LLM call with full state</div></div>
-          </div>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Active agents</div>
-        <div class="guide-grid">
-          <div class="guide-card"><div class="guide-card-label">Chat Agent</div><div class="guide-card-val">Entry point. Analyzes input, updates state, routes to specialist agents</div></div>
-          <div class="guide-card"><div class="guide-card-label">Structure Generator</div><div class="guide-card-val">Generates pages + modules, handles refine, resolve assumptions, diff modes</div></div>
-          <div class="guide-card"><div class="guide-card-label">Context Updater</div><div class="guide-card-val">Merges new documents into existing project context, shows diff</div></div>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Shared state sent to every LLM call</div>
-        <div class="guide-code"><span class="cc">// buildPayload() — sent as JSON stringified user message</span>
-          {
-          <span class="ck">"documents"</span>:         [{ id, name, original_summary, uploaded_at }],
-          <span class="ck">"manual_inputs"</span>:     [{ id, topic, detail, added_at }],
-          <span class="ck">"project_summary"</span>:   <span class="cs">"combined text of all docs + inputs"</span>,
-          <span class="ck">"project_context"</span>:   { summary, confidence, entities, covered, gaps },
-          <span class="ck">"existing_structure"</span>: { pages: [], sections: [], modules: [], inserted_at },
-          <span class="ck">"user_input"</span>:        <span class="cs">"what the user typed"</span>
-          }</div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">PDF handling</div>
-        <div class="guide-desc">PDFs are never sent as binary. pdf.js extracts plain text client-side and injects it into the message:</div>
-        <div class="guide-code">[DOCUMENT: myfile.pdf]
-
-          &lt;PARSED TEXT FOR PAGE: 1 / 11&gt;
-          Lorem ipsum...
-
-          &lt;PARSED TEXT FOR PAGE: 2 / 11&gt;
-          ...</div>
-      </div>
-    </div>
-
-    <!-- CHAT AGENT -->
-    <div class="guide-body" id="g-chat" style="display:none;">
-      <div class="guide-section">
-        <div class="guide-section-title">Role</div>
-        <div class="guide-desc">Entry point for every user message. Classifies the input and decides whether to analyze it, store it, answer directly, or route to a specialist agent.</div>
-        <div class="guide-chip-row">
-          <span class="guide-chip trigger">Trigger: every user send</span>
-          <span class="guide-chip state">Reads: full state</span>
-          <span class="guide-chip state">Writes: documents, manual_inputs, project_summary</span>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">LLM output → actions</div>
-        <div class="guide-code"><span class="cc">// analyze_document — file uploaded or PDF pasted</span>
-          { <span class="ck">"action"</span>: <span class="cs">"analyze_document"</span>, <span class="ck">"document"</span>: { name, original_summary, topics },
-          <span class="ck">"chat_response"</span>: <span class="cs">"..."</span>, <span class="ck">"next_actions"</span>: { ... } }
-          <span class="cc">→ UI: push to state.documents, rebuild project_summary, show message</span>
-
-          <span class="cc">// analyze_input — free text describes project</span>
-          { <span class="ck">"action"</span>: <span class="cs">"analyze_input"</span>, <span class="ck">"chat_response"</span>: <span class="cs">"..."</span>,
-          <span class="ck">"project_summary"</span>: <span class="cs">"..."</span>, <span class="ck">"next_actions"</span>: { ... } }
-
-          <span class="cc">// add_to_manual_input — new detail not yet in context</span>
-          { <span class="ck">"action"</span>: <span class="cs">"add_to_manual_input"</span>, <span class="ck">"manual_input"</span>: { topic, detail },
-          <span class="ck">"chat_response"</span>: <span class="cs">"..."</span> }
-          <span class="cc">→ UI: push to state.manual_inputs, rebuild project_summary</span>
-
-          <span class="cc">// modify_manual_input — correction to existing info</span>
-          { <span class="ck">"action"</span>: <span class="cs">"modify_manual_input"</span>,
-          <span class="ck">"manual_input_modification"</span>: { target_id, topic, new_detail } }
-
-          <span class="cc">// answer — direct reply, no state change</span>
-          { <span class="ck">"action"</span>: <span class="cs">"answer"</span>, <span class="ck">"chat_response"</span>: <span class="cs">"..."</span>,
-          <span class="ck">"next_actions"</span>: { label, buttons: [{ id, name, command, subtext }] } }
-
-          <span class="cc">// clarify — ask user something before acting</span>
-          { <span class="ck">"action"</span>: <span class="cs">"clarify"</span>, <span class="ck">"chat_response"</span>: <span class="cs">"..."</span>,
-          <span class="ck">"next_actions"</span>: { ... }, <span class="ck">"pending_free_input"</span>: { ... } }
-
-          <span class="cc">// route_to_agent — hand off to specialist</span>
-          { <span class="ck">"action"</span>: <span class="cs">"route_to_agent"</span>, <span class="ck">"agent"</span>: <span class="cs">"agent_builder"</span>,
-          <span class="ck">"handoff"</span>: { generation_type, mode } }
-          <span class="cc">→ UI: new LLM call to target agent with full state</span></div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Frontend state updates</div>
-        <div class="guide-chip-row">
-          <span class="guide-chip action">state.documents.push(doc)</span>
-          <span class="guide-chip action">state.manual_inputs.push(mi)</span>
-          <span class="guide-chip action">state.project_summary rebuilt</span>
-          <span class="guide-chip action">addAssistantMessage()</span>
-          <span class="guide-chip action">updateStatePanel()</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- STRUCTURE GENERATOR -->
-    <div class="guide-body" id="g-structure" style="display:none;">
-      <div class="guide-section">
-        <div class="guide-section-title">Role</div>
-        <div class="guide-desc">Generates the app structure — pages and modules — rendered as an interactive structure card. Supports generate, refine, resolve assumptions, and diff modes.</div>
-        <div class="guide-chip-row">
-          <span class="guide-chip trigger">Trigger: route_to_agent → agent_builder</span>
-          <span class="guide-chip state">Reads: project_context, documents, manual_inputs, existing_structure</span>
-          <span class="guide-chip state">Writes: state.existing_structure, state.project_context</span>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Generation modes</div>
-        <div class="guide-grid">
-          <div class="guide-card"><div class="guide-card-label">modules</div><div class="guide-card-val">Pages + grouped modules with summaries</div></div>
-          <div class="guide-card"><div class="guide-card-label">modules_features</div><div class="guide-card-val">Pages + modules + features per module</div></div>
-          <div class="guide-card"><div class="guide-card-label">full</div><div class="guide-card-val">Pages + modules + features + subfeatures</div></div>
-          <div class="guide-card"><div class="guide-card-label">refine</div><div class="guide-card-val">User gives instruction — only changes what was asked</div></div>
-          <div class="guide-card"><div class="guide-card-label">resolve</div><div class="guide-card-val">Generates Q&amp;A questions for open assumptions, user answers via QA widget</div></div>
-          <div class="guide-card"><div class="guide-card-label">diff</div><div class="guide-card-val">Compares new context vs existing modules, returns only changed/new</div></div>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">LLM output → structure card</div>
-        <div class="guide-code"><span class="cc">// status: completed — renders structure card</span>
-          { <span class="ck">"status"</span>: <span class="cs">"completed"</span>,
-          <span class="ck">"pages"</span>:   [{ name, summary, assumptions[] }],
-          <span class="ck">"sections"</span>: [{ name, modules: [{ name, summary, assumptions[] }] }],
-          <span class="ck">"global_assumptions"</span>: [...],
-          <span class="ck">"confidence"</span>: 85, <span class="ck">"assumption_label"</span>: <span class="cs">"minor assumptions"</span>,
-          <span class="ck">"store_project_context"</span>: true, <span class="ck">"project_context"</span>: { ... } }
-          <span class="cc">→ UI: renderStructureCard() — collapsible rows, action buttons</span>
-
-          <span class="cc">// status: diff_completed</span>
-          { <span class="ck">"status"</span>: <span class="cs">"diff_completed"</span>,
-          <span class="ck">"updated_modules"</span>: [...], <span class="ck">"unchanged_count"</span>: 3 }
-          <span class="cc">→ UI: show diff summary message</span>
-
-          <span class="cc">// type: open_questions — for resolve assumptions</span>
-          { <span class="ck">"type"</span>: <span class="cs">"open_questions"</span>,
-          <span class="ck">"questions"</span>: [{ text, type, options: [{ id, label }] }] }
-          <span class="cc">→ UI: showResolveWidget() → QA widget (qa.js)</span></div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Structure card actions</div>
-        <div class="guide-chip-row">
-          <span class="guide-chip action">Resolve assumptions → QA widget for open questions</span>
-          <span class="guide-chip action">Refine modules → user types instruction, re-generates</span>
-          <span class="guide-chip action">Insert selected → saves to state.existing_structure</span>
-        </div>
-      </div>
-      <hr class="guide-divider">
-      <div class="guide-section">
-        <div class="guide-section-title">Frontend state updates</div>
-        <div class="guide-chip-row">
-          <span class="guide-chip action">state.existing_structure = { pages, sections, modules }</span>
-          <span class="guide-chip action">state.project_context (if store_project_context)</span>
-          <span class="guide-chip action">renderStructureCard() — toggleable rows</span>
-          <span class="guide-chip action">updateStatePanel()</span>
-        </div>
-      </div>
-    </div>
-
-
-  </div>
-</div>
-
 <!-- PROMPTS MODAL -->
 <div class="modal-overlay" id="prompts-modal" onclick="closeModalOnOverlay(event)">
   <div class="modal">
@@ -446,9 +263,14 @@
       <button class="modal-close" onclick="closePromptsModal()">×</button>
     </div>
     <div class="modal-tabs">
-      <div class="mtab active" onclick="showPromptTab('agent_chat')">Chat Agent</div>
-      <div class="mtab" onclick="showPromptTab('agent_builder')">Builder Agent</div>
-      <div class="mtab" onclick="showPromptTab('agent_interviewer')">Interviewer Agent</div>
+      <div class="mtab active" onclick="showPromptTab('intent_router')">Intent Router</div>
+      <div class="mtab" onclick="showPromptTab('analyze_base')">Analyze</div>
+      <div class="mtab" onclick="showPromptTab('answer')">Answer</div>
+      <div class="mtab" onclick="showPromptTab('clarify')">Clarify</div>
+      <div class="mtab" onclick="showPromptTab('query')">Query</div>
+      <div class="mtab" onclick="showPromptTab('mutation')">Mutation</div>
+      <div class="mtab" onclick="showPromptTab('builder_base')">Builder</div>
+      <div class="mtab" onclick="showPromptTab('interview_base')">Interview</div>
     </div>
     <div class="modal-body">
       <div class="prompt-layout" id="prompt-layout">
@@ -490,24 +312,6 @@
 <script src="js/provider.js"></script>
 <script src="js/sidebar-resize.js"></script>
 <script>
-  function openGuideModal() {
-    document.getElementById('guide-modal').classList.add('open');
-  }
-  function closeGuideModal() {
-    document.getElementById('guide-modal').classList.remove('open');
-  }
-  function closeGuideOnOverlay(e) {
-    if (e.target === document.getElementById('guide-modal')) closeGuideModal();
-  }
-  function showGuideTab(id) {
-    ['g-overview','g-chat','g-structure'].forEach(t => {
-      document.getElementById(t).style.display = t === id ? '' : 'none';
-    });
-    document.querySelectorAll('#guide-modal .mtab').forEach((t, i) => {
-      t.classList.toggle('active', ['g-overview','g-chat','g-structure'][i] === id);
-    });
-  }
-
   // Prompt TOC resize
   (function() {
     const handle = document.getElementById('prompt-toc-resize');

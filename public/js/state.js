@@ -18,11 +18,13 @@ function freshState() {
     _qaHistory: [],
     _selectedTopics: [],
     _capturedTopics: null, // stored from first analyze_input/analyze_document — never changes
-    _openPoints: [],      // unresolved decisions/unclear requirements from input
+    _openPoints: [],      // unresolved technical decisions extracted from input
     _projectNotes: [],    // PM/planning items — launch strategy, migration, responsibilities
+    _decisions: [],       // already-made choices recorded in source ({title, quote, stakeholder, rationale})
+    _entities: [],        // named entities from source ({name, type, summary})
     _resolvedAnswers: [],  // answers from last resolve — kept for discard flow
     _resolvedPoints: [],   // confirmed resolved open points — shown separately, not in captured topics
-    _openPointsLoadingCount: 0, // number of pending per-doc open-point extractions
+    _openPointsLoadingCount: 0, // number of pending per-doc extract_details calls
     _openPointsLoadingStart: null, // timestamp when the first pending extraction started
     project_language: null, // null = not yet picked — set once via startup QA, then locked
     _languageConfirmed: false, // true after user picks from the startup language QA
@@ -86,6 +88,60 @@ const PROVIDER_LABELS = { anthropic: 'Claude', openai: 'OpenAI', gemini: 'Gemini
 function getDocuments()    { return state.inputs.filter(i => i.source === 'document'); }
 function getFreeInputs()   { return state.inputs.filter(i => i.source === 'text'); }
 function getAdditionalInputs() { return state.inputs.filter(i => i.source === 'additional'); }
+
+// ─── SUMMARY HISTORY HELPERS ─────────────────────────────────────────────────
+// Every `summary` on pages/modules/features is an append-only array of
+// { text, date, source } entries. The latest entry is the current version.
+// These helpers normalize legacy string summaries and read/append safely.
+
+// Normalize any summary field — accepts string (legacy) or array, always returns
+// an array. Used on hydrate / load paths so older stored structures still work.
+function normalizeSummary(s, fallbackDate) {
+  if (Array.isArray(s)) return s;
+  if (typeof s === 'string' && s.trim()) {
+    return [{ text: s, date: fallbackDate || new Date().toISOString(), source: null }];
+  }
+  return [];
+}
+
+// Walk a structure object and normalize every summary field found on pages,
+// sections[].modules[], and modules[].features[]. Mutates in place; idempotent.
+function normalizeStructureSummaries(struct, fallbackDate) {
+  if (!struct || typeof struct !== 'object') return struct;
+  (struct.pages || []).forEach(p => {
+    if (p?.synthetic === 'project_notes') return; // checkbox_items stay strings
+    p.summary = normalizeSummary(p.summary, fallbackDate);
+  });
+  const walkModule = (m) => {
+    if (!m) return;
+    m.summary = normalizeSummary(m.summary, fallbackDate);
+    (m.features || []).forEach(f => {
+      if (!f) return;
+      f.summary = normalizeSummary(f.summary, fallbackDate);
+    });
+  };
+  (struct.sections || []).forEach(sec => (sec.modules || []).forEach(walkModule));
+  (struct.modules  || []).forEach(walkModule);
+  return struct;
+}
+
+// Append one entry to a summary history array, returns the new array.
+function appendSummaryEntry(existing, entry) {
+  const history = Array.isArray(existing) ? existing.slice() : (typeof existing === 'string' && existing.trim() ? [{ text: existing, date: null, source: null }] : []);
+  history.push({
+    text:   entry?.text   || '',
+    date:   entry?.date   || new Date().toISOString(),
+    source: entry?.source || null,
+  });
+  return history;
+}
+
+// Current (latest) summary text — handles string (legacy), array, or null.
+function currentSummaryText(s) {
+  if (typeof s === 'string') return s;
+  if (Array.isArray(s) && s.length > 0) return s[s.length - 1]?.text || '';
+  return '';
+}
 
 let state = providerStates['anthropic'];
 // Multi-file upload: each entry is { file: File, text: string|null, ready: Promise<void>, error: string|null }
