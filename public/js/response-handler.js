@@ -482,16 +482,27 @@ async function handleResponse(r, userText) {
       }
     }
 
-    // Per-doc open-point extraction — each doc extracts independently in parallel.
-    // New uploads only: extract just the docs attached to this turn, not the ones
-    // already analyzed in previous turns.
+    // Per-source detail extraction — each new input (doc OR text) extracts in
+    // parallel. New only: just the inputs attached to this turn.
     const newDocs = (state.inputs || [])
         .filter(i => i.source === 'document' && i.text)
         .slice(-(pendingFileTexts?.length || 0));
-    const willExtractOpenPoints = r.action === 'analyze_document' && newDocs.length > 0;
+    // The new text input from analyze_input is whichever `source: "text"` entry
+    // was just pushed in the analyze_input branch above — always the last one.
+    const newTextInput = r.action === 'analyze_input'
+        ? (state.inputs || []).slice().reverse().find(i => i.source === 'text')
+        : null;
+
+    const willExtractDocs = r.action === 'analyze_document' && newDocs.length > 0;
+    const willExtractText = !!newTextInput;
+    const willExtractOpenPoints = willExtractDocs || willExtractText;
+
     if (willExtractOpenPoints) {
       if ((state._openPointsLoadingCount || 0) === 0) state._openPointsLoadingStart = Date.now();
-      state._openPointsLoadingCount = (state._openPointsLoadingCount || 0) + newDocs.length;
+      const count = (willExtractDocs ? newDocs.length : 0) + (willExtractText ? 1 : 0);
+      state._openPointsLoadingCount = (state._openPointsLoadingCount || 0) + count;
+    }
+    if (willExtractDocs) {
       // Per-doc loading set so the multi-doc tab bar can show a spinner per doc.
       if (!state._docLoadingNames) state._docLoadingNames = new Set();
       newDocs.forEach(d => state._docLoadingNames.add(d.name));
@@ -501,9 +512,11 @@ async function handleResponse(r, userText) {
 
     // While extraction is pending, defer the NA bar and hint text — they reappear
     // once all extractions complete (see the .finally chain below).
+    // ONLY for docs — analyze_input shows its project summary + NA right away;
+    // the text-input extract enriches the right rail in the background.
     let _passNextActions = nextActions;
     let _passText        = r.chat_response;
-    if (willExtractOpenPoints) {
+    if (willExtractDocs) {
       state._pendingPostExtractNA = nextActions;
       _passNextActions = null;
       if (typeof r.chat_response === 'object' && r.chat_response && r.chat_response.hint) {
@@ -521,8 +534,8 @@ async function handleResponse(r, userText) {
       populateHiddenNextActions();
     }
 
-    // ── Per-doc detail extraction (parallel) ─────────────────────────────
-    if (willExtractOpenPoints) {
+    // ── Per-source detail extraction (parallel) ───────────────────────────
+    if (willExtractDocs) {
       for (const d of newDocs) {
         extractDetailsForDoc({ name: d.name, text: d.text }).finally(() => {
           state._openPointsLoadingCount = Math.max(0, (state._openPointsLoadingCount || 1) - 1);
@@ -534,6 +547,20 @@ async function handleResponse(r, userText) {
           refreshContextCardInLastMessage();
         });
       }
+    }
+    // Text-input extract — runs alongside the analyze_input response on the same
+    // input id. extract_details mines decisions / open_points / project_notes /
+    // entities from the user's typed text and merges back by inputs[].id.
+    if (willExtractText) {
+      const sourceText = userText || newTextInput.summary || '';
+      extractDetailsForDoc({ name: newTextInput.id, text: sourceText }).finally(() => {
+        state._openPointsLoadingCount = Math.max(0, (state._openPointsLoadingCount || 1) - 1);
+        if (state._openPointsLoadingCount === 0) {
+          state._openPointsLoadingStart = null;
+          finalizePostExtraction();
+        }
+        refreshContextCardInLastMessage();
+      });
     }
   }
 
